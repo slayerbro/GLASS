@@ -29,7 +29,8 @@ export function Dashboard() {
   return (
     <div className="h-full flex flex-col" style={{ background: 'rgba(10,12,18,0.42)' }}>
       {/* title bar (native window controls are drawn by Windows on the right) */}
-      <div className="drag h-10 flex items-center pl-4 gap-3 flex-none">
+      {/* macOS draws its traffic-light buttons on the left of this bar */}
+      <div className={`drag h-10 flex items-center gap-3 flex-none ${window.glass.platform === 'darwin' ? 'pl-[84px]' : 'pl-4'}`}>
         <span className="wordmark">GLASS</span>
         <span className="text-[11.5px] text-faint">Classroom copilot</span>
       </div>

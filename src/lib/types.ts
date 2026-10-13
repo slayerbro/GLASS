@@ -114,7 +114,7 @@ export interface Subject {
 export interface Settings {
   student_name: string;
   name_aliases: string[];
-  profile: 'cool' | 'fast' | 'balanced' | 'quality';
+  profile: 'mac' | 'cool' | 'fast' | 'balanced' | 'quality';
   language: string;
   audio_device: string | null;
   mic_enabled: boolean;
@@ -201,6 +201,7 @@ export interface Metrics {
 declare global {
   interface Window {
     glass: {
+      platform: string;
       send: (ch: string, data?: unknown) => void;
       invoke: <T = any>(ch: string, data?: unknown) => Promise<T>;
       on: (ch: string, cb: (d: any) => void) => () => void;

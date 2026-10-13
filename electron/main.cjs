@@ -9,11 +9,19 @@ const { spawn } = require('child_process');
 const DEV = !!process.env.GLASS_DEV;
 const ROOT = path.join(__dirname, '..');
 const ENGINE_DIR = app.isPackaged ? path.join(process.resourcesPath, 'engine') : path.join(ROOT, 'engine');
-const LOCAL = process.env.LOCALAPPDATA || app.getPath('userData');
-const PY_CANDIDATES = [
+const IS_MAC = process.platform === 'darwin';
+// per-user data: %LOCALAPPDATA%\GLASS on Windows, ~/Library/Application Support/GLASS on macOS
+const LOCAL = IS_MAC ? app.getPath('appData') : (process.env.LOCALAPPDATA || app.getPath('userData'));
+const PY_CANDIDATES = IS_MAC ? [
+  path.join(ENGINE_DIR, '.venv', 'bin', 'python3'),
+  path.join(LOCAL, 'GLASS', 'venv', 'bin', 'python3'),
+] : [
   path.join(ENGINE_DIR, '.venv', 'Scripts', 'python.exe'),
   path.join(LOCAL, 'GLASS', 'venv', 'Scripts', 'python.exe'),
 ];
+// Windows reports physical pixels, macOS points; the engine handles Retina scaling itself
+const toScreenRect = (win, r) => (IS_MAC ? r : screen.dipToScreenRect(win, r));
+const toScreenPoint = (p) => (IS_MAC ? p : screen.dipToScreenPoint(p));
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
@@ -21,7 +29,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 const UI_PATH = path.join(app.getPath('userData'), 'ui.json');
 const DEFAULT_SHORTCUTS = {
   toggleOverlay: 'Control+Alt+G',
-  focusContext: 'Control+Alt+Space',
+  focusContext: process.platform === 'darwin' ? 'Control+Alt+K' : 'Control+Alt+Space',
   expandAnswer: 'Control+Alt+A',
   showTask: 'Control+Alt+T',
   explain: 'Control+Alt+E',
@@ -134,14 +142,19 @@ function createOverlay() {
     x: pos.x, y: pos.y, width: ui.width, height: 132,
     frame: false, resizable: false, maximizable: false, minimizable: false, fullscreenable: false,
     skipTaskbar: true, alwaysOnTop: true, focusable: false, show: false, hasShadow: true,
-    transparent: !acrylic,
+    transparent: IS_MAC ? true : !acrylic,
     backgroundColor: '#00000000',
-    backgroundMaterial: acrylic ? 'acrylic' : undefined,
+    backgroundMaterial: !IS_MAC && acrylic ? 'acrylic' : undefined,
+    // macOS: native frosted glass, and a non-activating panel that floats over full-screen Meet
+    vibrancy: IS_MAC && acrylic ? 'hud' : undefined,
+    visualEffectState: IS_MAC ? 'active' : undefined,
+    type: IS_MAC ? 'panel' : undefined,
     roundedCorners: true,
     title: 'GLASS',
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
   });
   overlay.setAlwaysOnTop(true, 'screen-saver');
+  if (IS_MAC) overlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlay.setOpacity(Math.max(0.35, Math.min(1, ui.opacity || 1)));
   overlay.loadURL(pageUrl('overlay'));
   overlay.once('ready-to-show', () => overlay.showInactive());
@@ -156,7 +169,7 @@ function createOverlay() {
 
 function sendOverlayBounds() {
   if (!overlay) return;
-  const phys = screen.dipToScreenRect(overlay, overlay.getBounds());
+  const phys = toScreenRect(overlay, overlay.getBounds());
   overlay.webContents.send('overlay:bounds', [phys.x, phys.y, phys.width, phys.height]);
 }
 
@@ -171,9 +184,9 @@ function openDashboard(view) {
     width: 1240, height: 820, minWidth: 900, minHeight: 600,
     title: 'GLASS',
     backgroundColor: '#00000000',
-    backgroundMaterial: 'mica',
-    titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#00000000', symbolColor: '#C9CEDA', height: 40 },
+    ...(IS_MAC
+      ? { vibrancy: 'under-window', visualEffectState: 'active', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 13 } }
+      : { backgroundMaterial: 'mica', titleBarStyle: 'hidden', titleBarOverlay: { color: '#00000000', symbolColor: '#C9CEDA', height: 40 } }),
     show: false,
     icon: path.join(ROOT, 'build', 'icon.png'),
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false },
@@ -190,7 +203,7 @@ let snipFreezing = false;
 function startSnip() {
   if (snipWin || snipFreezing) return;
   const cursor = screen.getCursorScreenPoint();
-  const phys = screen.dipToScreenPoint(cursor);
+  const phys = toScreenPoint(cursor);
   const overlayWasVisible = !!(overlay && overlay.isVisible());
   if (!overlay || engineState.state !== 'ready') return openSnipWindow(null, overlayWasVisible);
   snipFreezing = true;
@@ -218,6 +231,7 @@ function openSnipWindow(image, restoreOverlay) {
     webPreferences: { preload, contextIsolation: true, nodeIntegration: false },
   });
   snipWin.setAlwaysOnTop(true, 'screen-saver');
+  if (IS_MAC) snipWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   snipWin.loadURL(pageUrl('snip'));
   snipWin.webContents.once('did-finish-load', () => { if (image && snipWin) snipWin.webContents.send('snip:image', image); });
   snipWin.once('ready-to-show', () => { snipWin.show(); snipWin.focus(); });
@@ -275,7 +289,13 @@ ipcMain.handle('engine:config', () => engineState);
 ipcMain.handle('engine:log', () => engineLog.join(''));
 ipcMain.handle('engine:restart', () => { if (engine) { engine.kill(); } else { startEngine(); } return true; });
 ipcMain.handle('engine:setup', () => {
-  // visible PowerShell window: the student sees every download and install step
+  // a visible terminal window: the student sees every download and install step
+  if (IS_MAC) {
+    const script = path.join(ENGINE_DIR, 'setup_engine.sh').replace(/"/g, '\\"');
+    spawn('osascript', ['-e', `tell application "Terminal" to do script "bash \\"${script}\\""`, '-e', 'tell application "Terminal" to activate'],
+      { detached: true, stdio: 'ignore' }).unref();
+    return true;
+  }
   const script = path.join(ENGINE_DIR, 'setup_engine.ps1');
   const p = spawn('cmd.exe', ['/c', 'start', '"GLASS setup"', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', script],
     { detached: true, stdio: 'ignore', windowsHide: false });
@@ -306,7 +326,7 @@ ipcMain.on('snip:done', (_e, r) => {
   if (!snipWin) return;
   const d = snipWin._display;
   const dip = { x: d.bounds.x + r.x, y: d.bounds.y + r.y, width: r.width, height: r.height };
-  const phys = screen.dipToScreenRect(null, dip);
+  const phys = toScreenRect(null, dip);
   snipWin.close();
   // give the compositor a moment to remove the dimming layer before capture
   setTimeout(() => {
@@ -356,7 +376,9 @@ ipcMain.on('app:quit', () => app.quit());
 
 // ------------------------------------------------------------------ tray
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(ROOT, 'build', 'tray.png'));
+  // macOS menu bar wants a monochrome "template" image that adapts to light/dark
+  const icon = nativeImage.createFromPath(path.join(ROOT, 'build', IS_MAC ? 'trayTemplate.png' : 'tray.png'));
+  if (IS_MAC) icon.setTemplateImage(true);
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   tray.setToolTip('GLASS — classroom copilot');
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -374,6 +396,7 @@ function createTray() {
 // `GLASS.exe --view=notes` (e.g. from a Start-menu shortcut) opens that dashboard section
 const viewArg = (argv) => { const a = argv.find((x) => x.startsWith('--view=')); return a ? a.slice(7) : undefined; };
 app.on('second-instance', (_e, argv) => openDashboard(viewArg(argv)));
+app.on('activate', () => openDashboard());  // macOS: clicking the Dock icon
 app.whenReady().then(async () => {
   app.setAppUserModelId('app.glass.classcopilot');
   await startEngine();

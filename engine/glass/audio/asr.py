@@ -52,7 +52,8 @@ def _add_cuda_dll_dirs() -> None:
         os.environ["PATH"] = os.pathsep.join(extra) + os.pathsep + os.environ.get("PATH", "")
 
 
-_add_cuda_dll_dirs()
+if sys.platform == "win32":
+    _add_cuda_dll_dirs()
 
 # Phrases Whisper is known to hallucinate on silence, music or noise.
 HALLUCINATIONS = {
@@ -225,12 +226,27 @@ class ASRWorker:
         self._recent_finals: deque[tuple[float, str, str]] = deque(maxlen=12)
 
     # -- model ---------------------------------------------------------------
-    def load(self, model_name: str, compute: str = "float16") -> None:
+    def load(self, model_name: str, compute: str = "float16", device: str = "auto", threads: int = 0) -> None:
         from faster_whisper import WhisperModel
         from ..config import MODELS_DIR
 
         self.on_status("loading", {"model": model_name})
         t = time.perf_counter()
+        if device == "cpu" or sys.platform == "darwin":
+            # Macs have no CUDA: load straight onto the CPU (int8 is ~4x faster than float32 there)
+            kw = dict(device="cpu", compute_type="int8" if compute in ("float16", "int8_float16") else compute,
+                      download_root=str(MODELS_DIR / "whisper"), cpu_threads=threads or 0)
+            try:
+                model = WhisperModel(model_name, local_files_only=True, **kw)
+            except Exception:
+                self.on_status("loading", {"model": model_name, "note": "downloading speech model (first run)"})
+                model = WhisperModel(model_name, **kw)
+            list(model.transcribe(np.zeros(TARGET_SR, np.float32), beam_size=1, language="en")[0])
+            self.model, self.model_name = model, model_name
+            self.device, self.compute = "cpu", kw["compute_type"]
+            self.on_status("ready", {"model": model_name, "device": "cpu", "compute": self.compute,
+                                     "load_s": round(time.perf_counter() - t, 1)})
+            return
         try:
             try:  # offline first: no network request when the model is already cached
                 model = WhisperModel(model_name, device="cuda", compute_type=compute,

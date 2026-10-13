@@ -2,7 +2,7 @@
   "name": "glass",
   "productName": "GLASS",
   "version": "0.1.0",
-  "description": "GLASS — real-time AI classroom copilot (local, private)",
+  "description": "GLASS \u2014 real-time AI classroom copilot (local, private)",
   "main": "electron/main.cjs",
   "private": true,
   "scripts": {
@@ -10,7 +10,8 @@
     "build": "vite build",
     "start": "electron .",
     "typecheck": "tsc --noEmit",
-    "dist": "vite build && electron-builder --win"
+    "dist": "vite build && electron-builder --win",
+    "dist:mac": "vite build && electron-builder --mac"
   },
   "dependencies": {
     "katex": "^0.19.0",
@@ -41,12 +42,57 @@
   "build": {
     "appId": "app.glass.classcopilot",
     "productName": "GLASS",
-    "directories": { "output": "release" },
-    "files": ["dist/**", "electron/**", "package.json"],
-    "extraResources": [
-      { "from": "engine", "to": "engine", "filter": ["glass/**", "!**/__pycache__/**", "requirements.txt", "setup_engine.ps1"] }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "build/tray*.png",
+      "build/icon.png",
+      "package.json"
     ],
-    "win": { "target": ["nsis"], "icon": "build/icon.png" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+    "extraResources": [
+      {
+        "from": "engine",
+        "to": "engine",
+        "filter": [
+          "glass/**",
+          "!**/__pycache__/**",
+          "requirements.txt",
+          "requirements-mac.txt",
+          "setup_engine.ps1",
+          "setup_engine.sh",
+          "macos/*.swift"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.education",
+      "icon": "build/icon-mac.png",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "GLASS transcribes your microphone only if you turn it on in Settings.",
+        "LSUIElement": false
+      }
+    }
   }
 }

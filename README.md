@@ -29,6 +29,33 @@ The Python engine lives in `engine/.venv` (already created on this PC). On a new
 
 On this PC the installed app already works: `%LOCALAPPDATA%\GLASS\venv` is a link to `engine\.venv`. If you move or delete this folder, re-run setup.
 
+## macOS (13 Ventura or newer, Intel or Apple Silicon)
+
+```bash
+npm install
+```
+```bash
+node node_modules/electron/install.js
+```
+```bash
+bash engine/setup_engine.sh
+```
+```bash
+npm run build && npm start
+```
+
+`setup_engine.sh` needs Python 3.11 (python.org installer) and the Xcode Command Line Tools (it offers to install them). It installs the engine, builds the small system-audio helper, installs Ollama if needed and downloads the models. `npm run dist:mac` builds a `.dmg`; it has to be run on a Mac.
+
+The first time GLASS listens, macOS asks to allow **Screen & System Audio Recording**. Allow it, then restart GLASS.
+
+How the Mac version differs:
+- **Audio:** macOS's own system-audio capture (ScreenCaptureKit) instead of Windows loopback. A BlackHole device also works.
+- **Screen and text:** the built-in `screencapture` tool for screen reading and Snip, and **Apple Vision** for text recognition.
+- **Speed:** Whisper and the AI run on the CPU on Intel Macs. The **Mac** profile uses `qwen3:1.7b`, short prompts, and writes notes at the end of the lesson. Expect answers in roughly 4–7 s on a 2019 Intel i9; exact maths stays instant. Apple Silicon Macs use `qwen3:4b-instruct` and are faster.
+- **No diagram reading** on Intel Macs: a vision model is too slow on a CPU. Snip still reads typed questions.
+- **Heat protection** uses macOS's own CPU speed-limit readings.
+- **Shortcuts** use ⌃⌥ (Control+Option). "Type context" is ⌃⌥K, because ⌃⌥Space switches keyboard input source on macOS.
+
 ## Using it
 
 1. Open GLASS → Settings → **Privacy** and confirm you have permission.

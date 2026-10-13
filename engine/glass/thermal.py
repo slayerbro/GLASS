@@ -18,6 +18,7 @@ Levels go up immediately and come down only after 45 s below the threshold.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from typing import Callable
 
@@ -84,6 +85,14 @@ class ThermalGuard:
         except Exception:
             return None, False
 
+    def _mac_limit(self) -> int | None:
+        """macOS only: CPU_Speed_Limit from `pmset -g therm` (100 = not throttled)."""
+        if sys.platform != "darwin":
+            return None
+        from .macos import cpu_speed_limit
+
+        return cpu_speed_limit()
+
     def _cpu_perf(self) -> float | None:
         if self._pdh is None:
             return None
@@ -124,6 +133,7 @@ class ThermalGuard:
         now = time.time()
         temp, gpu_thermal = self._gpu()
         perf = self._cpu_perf()
+        mac_limit = self._mac_limit()
         new_err = self._new_driver_errors()
         if new_err:
             self.driver_errors += new_err
@@ -143,8 +153,14 @@ class ThermalGuard:
             want, reason = "critical", f"GPU at {temp} °C"
         elif (temp is not None and temp >= HOT_C) or gpu_thermal:
             want, reason = "hot", f"GPU at {temp} °C" + (" and slowing down" if gpu_thermal else "")
+        elif mac_limit is not None and mac_limit <= 50:
+            want, reason = "critical", f"macOS cut the CPU to {mac_limit}% speed to cool down"
+        elif mac_limit is not None and mac_limit <= 75:
+            want, reason = "hot", f"macOS is slowing the CPU to {mac_limit}% (heat)"
         elif cpu_throttled:
             want, reason = "hot", "the CPU is being slowed down (heat or power saving)"
+        elif mac_limit is not None and mac_limit < 100:
+            want, reason = "warm", f"macOS is slowing the CPU to {mac_limit}% (heat)"
         elif temp is not None and temp >= WARM_C:
             want, reason = "warm", f"GPU at {temp} °C"
 
@@ -154,6 +170,8 @@ class ThermalGuard:
         else:  # cooling down: only step back after a sustained quiet period
             self._below_since = self._below_since or now
             new = want if now - self._below_since >= COOL_DOWN_S else self.level
+        if perf is None and mac_limit is not None:
+            perf = float(mac_limit)
         self.info = {"level": new, "gpu_temp": temp, "gpu_thermal": gpu_thermal, "cpu_perf": perf,
                      "cpu_throttled": cpu_throttled, "driver_errors": self.driver_errors,
                      "reason": reason if new == want else self.info.get("reason", "")}

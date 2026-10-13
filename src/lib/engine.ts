@@ -143,6 +143,15 @@ export async function connectEngine() {
 }
 
 // ------------------------------------------------------------------ helpers
+export const IS_MAC = typeof window !== 'undefined' && window.glass?.platform === 'darwin';
+
+/** "Control+Alt+S" -> "Ctrl+Alt+S" on Windows, "⌃⌥S" on macOS. */
+export function prettyAccel(a: string) {
+  if (!a) return 'Not set';
+  if (!IS_MAC) return a.replace(/Control/g, 'Ctrl');
+  return a.replace(/Control\+?/g, '⌃').replace(/Alt\+?/g, '⌥').replace(/Shift\+?/g, '⇧')
+    .replace(/(Command|Super|Meta)\+?/g, '⌘').replace(/Space/g, ' Space');
+}
 export const subjectName = (id: string | null | undefined, settings: Settings | null) =>
   settings?.subjects.find((s) => s.id === id)?.name ?? (id ? id : '');
 

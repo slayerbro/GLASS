@@ -4,16 +4,29 @@ from __future__ import annotations
 import copy
 import json
 import os
+import platform
+import sys
 import threading
 from pathlib import Path
 from typing import Any
 
-APP_DIR = Path(os.environ.get("GLASS_DATA_DIR") or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "GLASS")
+IS_MAC = sys.platform == "darwin"
+IS_WIN = sys.platform == "win32"
+IS_INTEL_MAC = IS_MAC and platform.machine() == "x86_64"
+
+
+def _base_dir() -> Path:
+    if IS_MAC:
+        return Path.home() / "Library" / "Application Support"
+    return Path(os.environ.get("LOCALAPPDATA", Path.home()))
+
+
+APP_DIR = Path(os.environ.get("GLASS_DATA_DIR") or _base_dir() / "GLASS")
 APP_DIR.mkdir(parents=True, exist_ok=True)
 SETTINGS_PATH = APP_DIR / "settings.json"
 DB_PATH = APP_DIR / "glass.db"
 # models are shared across data dirs (tests use a temp data dir but must not re-download 1.6 GB)
-MODELS_DIR = Path(os.environ.get("GLASS_MODELS_DIR") or Path(os.environ.get("LOCALAPPDATA", Path.home())) / "GLASS" / "models")
+MODELS_DIR = Path(os.environ.get("GLASS_MODELS_DIR") or _base_dir() / "GLASS" / "models")
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 SUBJECTS = [
@@ -66,6 +79,28 @@ PROFILES: dict[str, dict[str, Any]] = {
         "screen_interval": 1.5,
         "context_chars": 4000,
     },
+    # Macs: Whisper and the LLM run on the CPU (Ollama can't use the GPU on Intel Macs),
+    # so everything is sized for CPU latency: a 1.7B model, short prompts, no partial
+    # re-transcription, notes written at the end of the lesson, no vision model.
+    "mac": {
+        "asr_model": "small",
+        "asr_device": "cpu",
+        "asr_compute": "int8",
+        "asr_beam": 1,
+        "asr_threads": 6,
+        "partial_every": 0,
+        # Intel Macs: CPU only, so the small model; Apple Silicon: Ollama uses Metal
+        "llm_model": "qwen3:1.7b" if IS_INTEL_MAC else "qwen3:4b-instruct",
+        "num_ctx": 4096,
+        "verify_answers": False,
+        "vision_auto": False,
+        "vision_enabled": False,
+        "screen_interval": 3.0,
+        "context_chars": 1400,
+        "notes_interval": 900,
+        "state_chars": 1500,
+        "rewarm_prefix": True,
+    },
     "quality": {
         "asr_model": "large-v3-turbo",
         "asr_compute": "float16",
@@ -83,7 +118,7 @@ PROFILES: dict[str, dict[str, Any]] = {
 DEFAULTS: dict[str, Any] = {
     "student_name": "Sanad",
     "name_aliases": ["Sanad", "Sannad", "Sanaad", "Senad", "Sanadh"],
-    "profile": "cool",
+    "profile": "mac" if IS_MAC else "cool",
     "overrides": {},  # per-key overrides of the active profile
     "language": "auto",  # whisper language: auto | en | ar
     "audio_device": None,  # loopback device name; None = follow default output

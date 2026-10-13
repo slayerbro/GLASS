@@ -93,6 +93,37 @@ Last updated 2026-10-11. Hardware for all measurements: RTX 4070 Laptop GPU (8 G
 
 Tests: 43/43 unit tests, including the thermal guard with simulated sensors and snipping from a frozen frame. The full GPU scenario harness was **not** re-run this time: the student's laptop has a cooling fault and a live class was open.
 
+## 2026-10-13 — macOS port (target: MacBook Pro 16" 2019, Intel i9, 16 GB, macOS 15)
+
+Built and verified on Windows, **not yet run on a Mac**:
+- Platform layer `engine/glass/macos.py`:
+  - window and display lists (Quartz),
+  - capture via the built-in `screencapture` tool,
+  - Apple Vision OCR,
+  - microphone and BlackHole input via `sounddevice`,
+  - thermal readings via `pmset -g therm`.
+- `engine/macos/glass-audio.swift`: a ScreenCaptureKit helper that streams system audio as Float32 PCM. `setup_engine.sh` compiles it.
+- **Mac** profile for CPU-only machines:
+  - Whisper `small` int8 on 6 threads, no partial re-transcription;
+  - `qwen3:1.7b` on Intel (`qwen3:4b-instruct` on Apple Silicon), 4k context, short prompts;
+  - notes every 15 minutes and at the end of the lesson, no vision model;
+  - the answer prompt is re-warmed in Ollama's cache after background jobs.
+- Electron:
+  - vibrancy, a non-activating panel over full-screen apps, Retina point coordinates;
+  - a Terminal-based setup launcher, a menu-bar template icon, ⌃⌥ shortcuts, a DMG target.
+- Every Python dependency was confirmed to have Intel-macOS wheels for Python 3.11 and 3.12. `onnxruntime` is pinned to 1.19.2, the last Intel-Mac build.
+
+Tests:
+- `tests/test_macos_port.py` (5/5): Retina scaling, Vision coordinate flip, `pmset` parsing, and a "pretend to be macOS" import of the whole engine with Apple frameworks stubbed. It confirms that every platform switch picks the Mac branch and nothing Windows-only runs on import.
+- Windows suite still 43/43.
+
+**Must be checked on the Mac:**
+- the Swift helper compiling and capturing (written against the macOS 13+ SDK but never compiled here);
+- the permission prompts;
+- Vision accuracy on Meet;
+- real CPU latency (estimated 4–7 s per answer on the i9);
+- the vibrancy look.
+
 ## Known limitations (honest)
 
 - **Real classroom audio not tested.** All speech tests used Windows SAPI voices. Real teachers (accents, crosstalk, poor microphones, Meet compression) will reduce accuracy. Add name spellings in Settings → Student if GLASS mishears "Sanad".

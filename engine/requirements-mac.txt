@@ -1,0 +1,18 @@
+# GLASS engine — macOS 13+ (Intel and Apple Silicon), Python 3.11. Install: engine/setup_engine.sh
+faster-whisper==1.2.1
+ctranslate2==4.8.3
+onnxruntime==1.19.2          # last release with Intel-Mac wheels
+sounddevice==0.5.6           # microphone / BlackHole input
+soxr==1.1.0
+numpy==2.4.6
+websockets==17.2
+httpx==0.28.1
+sympy==1.14.0
+pillow==12.3.0
+psutil==7.2.2
+rapidfuzz==3.14.6
+jellyfish==1.2.1
+pytesseract==0.3.13          # optional maths double-check if Tesseract is installed (brew install tesseract)
+pyobjc-framework-Quartz==12.2.2   # window list
+pyobjc-framework-Vision==12.2.2   # Apple Vision text recognition
+pytest==9.1.1

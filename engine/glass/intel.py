@@ -179,6 +179,11 @@ class LessonIntel:
         self._state_running = False
         self.tasks_history: list[dict] = []
         self._last_task_extract = 0.0
+        self.after_job = None  # callback after a background LLM job (CPU prefix re-warm)
+
+    def _after(self) -> None:
+        if self.after_job:
+            asyncio.ensure_future(self.after_job())
 
     def begin(self, session_id: str, subject_name: str) -> None:
         self.session_id = session_id
@@ -214,6 +219,7 @@ class LessonIntel:
             self.mem.subtopic = (st.get("subtopic") or "")[:60]
             self.mem.summary = (st.get("summary") or "")[:200]
             self.emit("lesson.state", state=self.mem.state())
+            self._after()
             if self.db and self.session_id:
                 self.db.update_session(self.session_id, topic=self.mem.topic, subject_id=self.mem.subject_id)
         except asyncio.CancelledError:
@@ -280,6 +286,7 @@ class LessonIntel:
             self._last_notes_t = time.time()
             self.persist()
             self.emit("notes.update", session_id=self.session_id, notes=self.notes, markdown=notes_markdown(self.notes))
+            self._after()
         except asyncio.CancelledError:
             reraise_if_cancelled()
         except json.JSONDecodeError as e:
@@ -391,6 +398,7 @@ class LessonIntel:
         if self.db:
             self.db.save_task(task)
         self.emit("task.update", task=task, history=self.tasks_history[-10:])
+        self._after()
         return task
 
     def complete_task(self, task_id: str) -> None:

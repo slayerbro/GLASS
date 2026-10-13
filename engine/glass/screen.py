@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import hashlib
+import sys
 import io
+import os
 import logging
 import re
 import time
@@ -27,17 +29,19 @@ from .memory import ScreenObs, parse_numbered_items
 
 log = logging.getLogger("glass.screen")
 
-user32 = ctypes.windll.user32
-gdi32 = ctypes.windll.gdi32
-dwmapi = ctypes.windll.dwmapi
+IS_MAC = sys.platform == "darwin"
 
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor: coordinates are physical pixels
-except Exception:
+if sys.platform == "win32":
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    dwmapi = ctypes.windll.dwmapi
     try:
-        user32.SetProcessDPIAware()
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor: coordinates are physical pixels
     except Exception:
-        pass
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 MEET_NOISE = re.compile(
     r"^(turn on captions|turn off captions|present now|you are presenting|stop presenting|leave call|meeting details|"
@@ -50,6 +54,10 @@ MEET_NOISE = re.compile(
 
 # ---------------------------------------------------------------------------- windows
 def list_windows() -> list[dict]:
+    if IS_MAC:
+        from . import macos
+
+        return macos.list_windows()
     import win32gui
     import win32process
     import psutil
@@ -94,6 +102,10 @@ def list_windows() -> list[dict]:
 
 
 def list_monitors() -> list[dict]:
+    if IS_MAC:
+        from . import macos
+
+        return macos.list_monitors()
     import mss
 
     with mss.mss() as s:
@@ -133,6 +145,15 @@ def capture_window(hwnd: int) -> np.ndarray | None:
 
 
 def capture_monitor(index: int, mask_rects: list[tuple[int, int, int, int]] | None = None) -> np.ndarray:
+    if IS_MAC:
+        from . import macos
+
+        img = macos.capture_display(index)
+        if img is not None and mask_rects:
+            m = next((x for x in macos.list_monitors() if x["index"] == index), None)
+            if m:
+                img = mask_points(img, m, mask_rects)
+        return img
     import mss
 
     with mss.mss() as s:
@@ -145,7 +166,21 @@ def capture_monitor(index: int, mask_rects: list[tuple[int, int, int, int]] | No
     return img
 
 
+def mask_points(img: np.ndarray, mon: dict, rects) -> np.ndarray:
+    """Blank rects given in global points on a Retina (pixel) capture of `mon`."""
+    s = img.shape[1] / max(1, mon["w"])
+    img = img.copy()
+    for (x, y, w, h) in rects:
+        x0, y0 = int((x - mon["left"]) * s), int((y - mon["top"]) * s)
+        img[max(0, y0):max(0, y0 + int(h * s)), max(0, x0):max(0, x0 + int(w * s))] = 0
+    return img
+
+
 def capture_rect(x: int, y: int, w: int, h: int) -> np.ndarray:
+    if IS_MAC:
+        from . import macos
+
+        return macos.capture_rect(x, y, w, h)
     import mss
 
     with mss.mss() as s:
@@ -164,6 +199,15 @@ def to_png(img: np.ndarray, max_side: int = 1600) -> bytes:
 
 
 # ---------------------------------------------------------------------------- OCR
+def _tesseract() -> str | None:
+    if IS_MAC:
+        from . import macos
+
+        return macos.tesseract_cmd()
+    p = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    return p if os.path.exists(p) else None
+
+
 class OCR:
     def __init__(self, engine: str = "windows"):
         self.engine = engine
@@ -187,13 +231,22 @@ class OCR:
         if max(w, h) < 1400:
             scale = min(2.0, 2000 / max(w, h))  # small text recognises far better upscaled
         try:
-            if self.engine == "windows":
+            if IS_MAC and self.engine != "tesseract":
+                from . import macos
+
+                langs = ["en-US", "ar-SA"] if lang.startswith("ar") else ["en-US"]
+                lines = await asyncio.to_thread(macos.vision_ocr, img, langs)
+                if _tesseract():
+                    lines = await asyncio.to_thread(self._repair_math_lines, img, lines)
+            elif self.engine == "windows":
                 lines = await self._read_windows(img, lang, scale)
                 lines = await asyncio.to_thread(self._repair_math_lines, img, lines)
             else:
                 lines = await asyncio.to_thread(self._read_tesseract, img, lang)
         except Exception as e:
-            log.warning("windows OCR failed (%s); trying tesseract", e)
+            log.warning("OCR failed (%s); trying tesseract", e)
+            if not _tesseract():
+                raise
             lines = await asyncio.to_thread(self._read_tesseract, img, lang)
         self.last_ms = (time.perf_counter() - t) * 1000
         return lines
@@ -209,7 +262,9 @@ class OCR:
         import pytesseract
         from PIL import Image
 
-        pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        if not _tesseract():
+            return lines
+        pytesseract.pytesseract.tesseract_cmd = _tesseract()
         H, W = img.shape[:2]
         mathy = [l for l in lines if re.search(r"=|\d\s*[-+×÷*/]|[-+]\s*\d|\bsolve\b|\bsimplify\b|\bexpand\b|\bfactori", l["text"], re.I)]
         def fix(l: dict) -> None:
@@ -271,7 +326,7 @@ class OCR:
         import pytesseract
         from PIL import Image
 
-        pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        pytesseract.pytesseract.tesseract_cmd = _tesseract()
         im = Image.fromarray(img[:, :, [2, 1, 0]])
         data = pytesseract.image_to_data(im, lang="ara+eng" if lang.startswith("ar") else "eng",
                                          output_type=pytesseract.Output.DICT)
@@ -324,7 +379,7 @@ class ScreenService:
         self._wgc_key = None
         self._wgc_seen = 0.0  # timestamp of the last WGC frame we analysed
         self._frozen = None  # (image, monitor_left, monitor_top, time) for Snip & Solve
-        self.method = "wgc"
+        self.method = "mac" if IS_MAC else "wgc"
         self.language = "en-US"
 
     @property
@@ -375,6 +430,8 @@ class ScreenService:
 
     def _grab(self) -> tuple[np.ndarray | None | str, str]:
         src = self.settings.get("screen_source") or {"kind": "monitor", "monitor": 1}
+        if self.method == "mac":
+            return self._grab_mac(src)
         if self.method == "wgc":
             try:
                 return self._grab_via_wgc(src)
@@ -383,6 +440,23 @@ class ScreenService:
                 self._close_wgc()
                 self.method = "gdi"
         return self._grab_gdi(src)
+
+    def _grab_mac(self, src: dict) -> tuple[np.ndarray | None, str]:
+        from . import macos
+
+        if src.get("kind") == "window":
+            wid = src.get("hwnd")
+            wins = macos.list_windows()
+            win = next((w for w in wins if w["hwnd"] == wid), None)
+            if win is None:  # window recreated (browser restart / new tab window): find it again
+                win = next((w for w in wins if src.get("title") and (w["title"] == src["title"] or (src.get("meet") and w["meet"]))), None)
+                if win is None:
+                    return None, ""
+                src["hwnd"] = win["hwnd"]
+                self.settings.update({"screen_source": src})
+            return macos.capture_window(win["hwnd"]), win["title"]
+        mon = int(src.get("monitor", 1))
+        return capture_monitor(mon, self.mask_rects), f"Display {mon}"
 
     def _resolve_hwnd(self, src: dict) -> int | None:
         import win32gui
@@ -562,18 +636,22 @@ class ScreenService:
         The full-screen selection window makes Chrome believe it is hidden, and it
         stops painting Meet's video (cameras/screen share turn grey). Freezing first —
         like the Windows Snipping Tool — captures what the student actually saw."""
-        from .wgc import grab_monitor_once
-
         mons = list_monitors()
         m = next((m for m in mons if m["left"] <= x < m["left"] + m["w"] and m["top"] <= y < m["top"] + m["h"]), mons[0])
         img = None
-        try:
-            img = grab_monitor_once(m["index"])
-        except Exception as e:
-            log.warning("WGC freeze failed (%s); using GDI", e)
+        if not IS_MAC:
+            from .wgc import grab_monitor_once
+
+            try:
+                img = grab_monitor_once(m["index"])
+            except Exception as e:
+                log.warning("WGC freeze failed (%s); using GDI", e)
         if img is None:
             img = capture_monitor(m["index"])
+        if img is None:
+            return None
         self._frozen = (img, m, time.time())
+        # macOS: rects arrive in points, the capture is in (Retina) pixels; Windows: both physical px
         return img, m
 
     async def snip(self, x: int, y: int, w: int, h: int) -> tuple[bytes, str, bool]:
@@ -582,8 +660,9 @@ class ScreenService:
         if self._frozen and time.time() - self._frozen[2] < 120:
             full, m, _ = self._frozen
             self._frozen = None
-            x0, y0 = max(0, x - m["left"]), max(0, y - m["top"])
-            img = full[y0:y0 + h, x0:x0 + w]
+            s = full.shape[1] / max(1, m["w"]) if IS_MAC else 1.0
+            x0, y0 = max(0, int((x - m["left"]) * s)), max(0, int((y - m["top"]) * s))
+            img = full[y0:y0 + int(h * s), x0:x0 + int(w * s)]
             if img.size == 0:
                 img = None
         if img is None:

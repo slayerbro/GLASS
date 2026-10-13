@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { cmd, useGlass } from '../../lib/engine';
+import { cmd, IS_MAC, prettyAccel, useGlass } from '../../lib/engine';
 import type { Settings } from '../../lib/types';
 
 const SECTIONS = ['Privacy', 'Student', 'Audio', 'Screen', 'AI models', 'Overlay', 'Shortcuts', 'Diagnostics'] as const;
@@ -12,6 +12,7 @@ const SHORTCUT_LABELS: Record<string, string> = {
 };
 
 const PROFILE_TEXT: Record<string, { title: string; text: string }> = {
+  mac: { title: 'Mac', text: 'Sized for a Mac CPU: a small, fast answer model, short prompts and notes written at the end of the lesson.' },
   cool: { title: 'Low heat', text: 'Least work for the laptop: one pass per sentence, no second check, slower background notes. Best for thin laptops or weak cooling.' },
   fast: { title: 'Fast', text: 'Smaller speech model, no second-check pass. Lowest latency and GPU use.' },
   balanced: { title: 'Balanced', text: 'Whisper large-v3-turbo + a background second check that can correct an answer.' },
@@ -137,9 +138,11 @@ function Audio({ st, patch }: P) {
   return (
     <div>
       <div className="h-title">Audio</div>
-      <Row label="Lesson audio" hint="GLASS listens to what your PC plays (system loopback) — no virtual cables needed. It follows your default output when it changes.">
+      <Row label="Lesson audio" hint={IS_MAC
+        ? "GLASS listens to what your Mac plays using macOS's own system-audio capture (allow 'Screen & System Audio Recording' when asked). A BlackHole device also works."
+        : "GLASS listens to what your PC plays (system loopback) — no virtual cables needed. It follows your default output when it changes."}>
         <select className="field h-[28px] w-[260px]" value={st.audio_device || ''} onChange={(e) => patch({ audio_device: e.target.value || null })}>
-          <option value="">Default output device</option>
+          <option value="">{IS_MAC ? 'System audio' : 'Default output device'}</option>
           {dev?.loopback.map((d) => <option key={d.name} value={d.name}>{d.name}{d.default ? ' (default)' : ''}</option>)}
         </select>
         <button className="btn btn-icon" onClick={load} title="Refresh devices"><RefreshCw size={12} /></button>
@@ -195,9 +198,11 @@ function Screen({ st, patch }: P) {
           <option value="[0,0.12,0.78,0.76]">…and the side panel</option>
         </select>
       </Row>
-      <Row label="Text recognition" hint="Windows OCR is fastest; maths lines are double-checked with Tesseract either way.">
+      <Row label="Text recognition" hint={IS_MAC
+        ? 'Apple Vision is built into macOS and very accurate on screen text. Install Tesseract (brew install tesseract) to double-check maths lines.'
+        : 'Windows OCR is fastest; maths lines are double-checked with Tesseract either way.'}>
         <select className="field h-[28px] w-[160px]" value={st.ocr_engine} onChange={(e) => patch({ ocr_engine: e.target.value })}>
-          <option value="windows">Windows OCR</option><option value="tesseract">Tesseract</option>
+          <option value="windows">{IS_MAC ? 'Apple Vision' : 'Windows OCR'}</option><option value="tesseract">Tesseract</option>
         </select>
       </Row>
       <div className="mt-4">
@@ -233,7 +238,7 @@ function Models({ st, patch }: P) {
       <div className="h-title">AI models & performance</div>
       <p className="text-[12.5px] text-muted mt-2 leading-relaxed">Everything runs locally on your GPU through Ollama and faster-whisper. No API keys, no subscriptions; maths is always computed exactly with SymPy.</p>
       <div className="grid grid-cols-2 gap-2 mt-4">
-        {(['cool', 'fast', 'balanced', 'quality'] as const).map((p) => (
+        {(IS_MAC ? (['mac', 'cool'] as const) : (['cool', 'fast', 'balanced', 'quality'] as const)).map((p) => (
           <button key={p} className={`panel p-3 text-left ${st.profile === p ? 'ring-1 ring-lumen/60 bg-white/[0.05]' : 'hover:bg-white/[0.05]'}`} onClick={() => patch({ profile: p })}>
             <div className="text-[13px] font-semibold">{PROFILE_TEXT[p].title}</div>
             <div className="text-[11.5px] text-faint mt-1 leading-snug">{PROFILE_TEXT[p].text}</div>
@@ -250,12 +255,18 @@ function Models({ st, patch }: P) {
         {llm?.state === 'missing' && <button className="btn btn-primary" onClick={() => cmd('models.pull', { model: llm.model })}>Download</button>}
         {(llm?.state === 'unavailable' || llm?.state === 'error') && <button className="btn" onClick={() => cmd('llm.check')}>Retry</button>}
       </Row>
+      {vis?.state === 'off' ? (
+        <Row label="Diagram reading" hint="Reading diagrams, graphs and handwriting needs a vision model, which is too slow on this computer's CPU. Snip & solve still reads typed questions.">
+          <span className="chip">Off on this computer</span>
+        </Row>
+      ) : (
       <Row label="Vision model" hint="Reads diagrams, graphs and handwriting in Snip & solve (and automatically in Quality).">
         <select className="field h-[28px] w-[220px]" value={st.vision_model} onChange={(e) => patch({ vision_model: e.target.value })}>
           {[...new Set([st.vision_model, ...models.map((x) => x.name).filter((n) => /vl|vision|llava|gemma3|minicpm/i.test(n))])].map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
         {vis?.state === 'missing' && <button className="btn btn-primary" onClick={() => cmd('models.pull', { model: st.vision_model })}>Download</button>}
       </Row>
+      )}
       <div className="eyebrow mt-6 mb-2">Measured on this PC</div>
       <div className="grid grid-cols-3 gap-2">
         <Stat label="Answer ready (avg)" value={m.answer_say_ms_avg ? `${(m.answer_say_ms_avg / 1000).toFixed(2)} s` : '—'} />
@@ -316,7 +327,9 @@ function Shortcuts() {
       if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
       const mods = [e.ctrlKey && 'Control', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Super'].filter(Boolean);
       if (!mods.length) return;
-      const key = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key;
+      // physical key: on macOS Option+S types "ß", so e.key would record the wrong shortcut
+      const key = e.code.startsWith('Key') ? e.code.slice(3) : e.code.startsWith('Digit') ? e.code.slice(5)
+        : e.code === 'Space' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key;
       window.glass.invoke('ui:set', { shortcuts: { [capturing]: [...mods, key].join('+') } }).then((r: any) => { setUi(r.ui); setFailed(r.failed); });
       setCapturing(null);
     };
@@ -333,7 +346,7 @@ function Shortcuts() {
         {Object.entries(SHORTCUT_LABELS).map(([k, label]) => (
           <Row key={k} label={label}>
             <button className={`kbd h-[26px] px-3 ${capturing === k ? 'ring-1 ring-lumen' : ''}`} onClick={() => setCapturing(k)}>
-              {capturing === k ? 'Press keys…' : (ui.shortcuts[k] || 'Not set').replace(/Control/g, 'Ctrl')}
+              {capturing === k ? 'Press keys…' : prettyAccel(ui.shortcuts[k])}
             </button>
             <button className="btn btn-ghost h-[24px] text-[11px]" onClick={() => window.glass.invoke('ui:set', { shortcuts: { [k]: ui.defaults[k] } }).then((r: any) => setUi(r.ui))}>Default</button>
           </Row>

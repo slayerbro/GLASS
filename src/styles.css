@@ -18,9 +18,9 @@
   --called: #ffc970;     /* the student was addressed */
   --exact: #7fe0b5;      /* verified by SymPy */
   --unsure: #ff9b8a;     /* uncertainty, errors */
-  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", -apple-system, "SF Pro Text", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", -apple-system, "SF Pro Display", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, ui-monospace, monospace;
   --level: 0;            /* live audio level 0..1, driven from JS */
   color-scheme: dark;
 }
@@ -33,9 +33,9 @@
   --color-unsure: #ff9b8a;
   --color-muted: #a3a9b8;
   --color-faint: #6b7180;
-  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, "SF Pro Text", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", -apple-system, "SF Pro Display", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", Consolas, "SF Mono", Menlo, ui-monospace, monospace;
 }
 
 html, body, #root { height: 100%; margin: 0; }

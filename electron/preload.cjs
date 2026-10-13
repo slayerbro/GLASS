@@ -7,6 +7,7 @@ const INVOKE = new Set(['engine:config', 'engine:log', 'engine:restart', 'engine
 const ON = new Set(['engine:state', 'shortcut', 'snip:rect', 'snip:vision', 'snip:freeze', 'snip:image', 'overlay:bounds', 'dashboard:view', 'ui:changed']);
 
 contextBridge.exposeInMainWorld('glass', {
+  platform: process.platform,
   send: (ch, data) => { if (SEND.has(ch)) ipcRenderer.send(ch, data); },
   invoke: (ch, data) => (INVOKE.has(ch) ? ipcRenderer.invoke(ch, data) : Promise.reject(new Error('blocked channel'))),
   on: (ch, cb) => {

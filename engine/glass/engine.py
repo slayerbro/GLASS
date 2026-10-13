@@ -11,6 +11,7 @@ import logging
 import os
 import queue
 import re
+import sys
 import threading
 import time
 from typing import Any
@@ -48,6 +49,7 @@ class Engine:
         self.math = MathService()
         self.answers = AnswerEngine(self.llm, self.sched, self.math, self.mem, self.settings, self.db, bus.emit)
         self.intel = LessonIntel(self.llm, self.sched, self.mem, self.settings, self.db, bus.emit)
+        self.intel.after_job = self.answers.warm_prefix
         self.screen = ScreenService(self.settings, self._on_screen_obs, self._screen_status, self._on_vision_request)
         self.names = NameDetector(self.settings.get("student_name"), self.settings.get("name_aliases"))
         self.asr = ASRWorker(self._on_segment_thread, self._asr_status)
@@ -122,14 +124,16 @@ class Engine:
         # the speech model loads on its own thread while the LLM warms up
         self.asr.beam = int(prof.get("asr_beam", 2))
         self._configure_asr()
-        threading.Thread(target=self._load_asr, args=(prof["asr_model"], prof.get("asr_compute", "float16")),
+        self.answers.num_ctx = self.intel.num_ctx = int(prof.get("num_ctx", 8192))
+        threading.Thread(target=self._load_asr, args=(prof["asr_model"], prof.get("asr_compute", "float16"),
+                                                      prof.get("asr_device", "auto"), int(prof.get("asr_threads", 0))),
                          daemon=True, name="asr-load").start()
         self._spawn(asyncio.to_thread(self.math.warm))
         await self.check_llm()
 
-    def _load_asr(self, name: str, compute: str) -> None:
+    def _load_asr(self, name: str, compute: str, device: str = "auto", threads: int = 0) -> None:
         try:
-            self.asr.load(name, compute)
+            self.asr.load(name, compute, device, threads)
             if not self.asr._thread or not self.asr._thread.is_alive():
                 self.asr.start()
         except Exception as e:
@@ -153,7 +157,10 @@ class Engine:
             except Exception as e:
                 self._set_status("llm", "error", model=model, message=str(e))
         vm = self.answers.vision_model
-        self._set_status("vision", "ready" if await self.llm.has_model(vm) else "missing", model=vm)
+        if not self.settings.profile().get("vision_enabled", True):
+            self._set_status("vision", "off", model=vm, message="Diagram reading is off on this computer (CPU only)")
+        else:
+            self._set_status("vision", "ready" if await self.llm.has_model(vm) else "missing", model=vm)
 
     async def pull_model(self, name: str) -> None:
         key = "vision" if name == self.answers.vision_model else "llm"
@@ -276,12 +283,19 @@ class Engine:
         vad_class = SileroVAD()
         self.segmenters = {"class": Segmenter("class", vad_class, self.asr.submit, self._on_activity)}
         self.segmenters["class"].partial_every = float(self.settings.profile().get("partial_every", 0.7))
-        self.sources = {"class": AudioSource("class", "loopback", self.settings.get("audio_device"), self.audio_q,
-                                             lambda st, info: self._audio_status("audio", st, info))}
+        if sys.platform == "darwin":
+            from .macos import MacInputAudio, MacSystemAudio
+
+            system_src, mic_src = (lambda *a: MacSystemAudio(*a)), (lambda *a: MacInputAudio(*a))
+        else:
+            system_src = lambda s, d, q, cb: AudioSource(s, "loopback", d, q, cb)  # noqa: E731
+            mic_src = lambda s, d, q, cb: AudioSource(s, "mic", d, q, cb)  # noqa: E731
+        self.sources = {"class": system_src("class", self.settings.get("audio_device"), self.audio_q,
+                                            lambda st, info: self._audio_status("audio", st, info))}
         if self.settings.get("mic_enabled"):
             self.segmenters["me"] = Segmenter("me", SileroVAD(), self.asr.submit, self._on_activity)
-            self.sources["me"] = AudioSource("me", "mic", self.settings.get("mic_device"), self.audio_q,
-                                             lambda st, info: self._audio_status("mic", st, info))
+            self.sources["me"] = mic_src("me", self.settings.get("mic_device"), self.audio_q,
+                                         lambda st, info: self._audio_status("mic", st, info))
         self._dsp_stop.clear()
         self._dsp_thread = threading.Thread(target=self._dsp_loop, name="dsp", daemon=True)
         self._dsp_thread.start()
@@ -699,6 +713,10 @@ class Engine:
 
     def devices(self) -> dict:
         try:
+            if sys.platform == "darwin":
+                from .macos import list_audio_devices
+
+                return list_audio_devices()
             return list_devices()
         except Exception as e:
             return {"loopback": [], "input": [], "error": str(e)}

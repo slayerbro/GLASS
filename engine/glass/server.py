@@ -247,8 +247,10 @@ class Server:
         if prof["asr_model"] != e.asr.model_name:
             import threading
 
-            threading.Thread(target=e._load_asr, args=(prof["asr_model"], prof.get("asr_compute", "float16")),
+            threading.Thread(target=e._load_asr, args=(prof["asr_model"], prof.get("asr_compute", "float16"),
+                                                       prof.get("asr_device", "auto"), int(prof.get("asr_threads", 0))),
                              daemon=True).start()
+        e.answers.num_ctx = e.intel.num_ctx = int(prof.get("num_ctx", 8192))
         await e.check_llm()
 
     async def _restart_audio(self) -> None:

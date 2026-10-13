@@ -517,7 +517,26 @@ class AnswerEngine:
         except Exception:
             pass
 
+    async def warm_prefix(self) -> None:
+        """CPU-only machines: Ollama caches the most recent prompt prefix. Background
+        jobs (notes, topic tracking) replace it, so the next answer would re-read the
+        whole system prompt — seconds on a laptop CPU. Re-warm it while idle."""
+        if not self.settings.profile().get("rewarm_prefix"):
+            return
+        system = P.SYSTEM_ANSWER.format(name=self.name, guide=P.guide(self.mem.subject_id, calc=True), format=P.FORMAT_RULES)
+        msgs = [{"role": "system", "content": system}, {"role": "user", "content": "ok"}]
+
+        async def job():
+            return await self.llm.chat(self.text_model, msgs, think=False, num_ctx=self.num_ctx, num_predict=1)
+
+        try:
+            await self.sched.submit(REVISION, job, key="prefix")
+        except (asyncio.CancelledError, Exception):
+            reraise_if_cancelled()
+
     async def prepare_vision(self) -> None:
+        if not self.settings.profile().get("vision_enabled", True):
+            return
         if self.vision_model != self.text_model:
             try:
                 await self.llm.warm(self.vision_model, self.num_ctx)
@@ -530,6 +549,14 @@ class AnswerEngine:
         self._push(ans, force=True)
         t0 = time.perf_counter()
         problem_text = ocr_text.strip()
+        if not self.settings.profile().get("vision_enabled", True):
+            if len(re.sub(r"\W", "", problem_text)) < 12:
+                ans["status"] = "error"
+                ans["error"] = ("No readable text in the selection. Reading diagrams needs the vision model, which this "
+                                "computer can't run fast enough — select the typed question instead.")
+                self._push(ans, force=True)
+                return ans
+            use_vision = False
         if use_vision or len(re.sub(r"\W", "", problem_text)) < 12:
             ans["status"] = "reading"
             self._push(ans, force=True)
