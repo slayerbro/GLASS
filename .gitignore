@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+engine/.venv/
+engine/**/__pycache__/
+engine/.pytest_cache/
+engine/tests/out/
+engine/tests/report.json
+
+# scratch files
+engine/_*.py

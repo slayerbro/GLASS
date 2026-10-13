@@ -1,0 +1,52 @@
+{
+  "name": "glass",
+  "productName": "GLASS",
+  "version": "0.1.0",
+  "description": "GLASS — real-time AI classroom copilot (local, private)",
+  "main": "electron/main.cjs",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n vite,electron \"vite\" \"wait-on tcp:5173 && cross-env GLASS_DEV=1 electron .\"",
+    "build": "vite build",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "dist": "vite build && electron-builder --win"
+  },
+  "dependencies": {
+    "katex": "^0.19.0",
+    "lucide-react": "^1.55.0",
+    "motion": "^14.1.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "rehype-katex": "^7.0.1",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^9.2.0",
+    "cross-env": "^10.0.0",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "wait-on": "^8.0.4"
+  },
+  "build": {
+    "appId": "app.glass.classcopilot",
+    "productName": "GLASS",
+    "directories": { "output": "release" },
+    "files": ["dist/**", "electron/**", "package.json"],
+    "extraResources": [
+      { "from": "engine", "to": "engine", "filter": ["glass/**", "!**/__pycache__/**", "requirements.txt", "setup_engine.ps1"] }
+    ],
+    "win": { "target": ["nsis"], "icon": "build/icon.png" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  }
+}

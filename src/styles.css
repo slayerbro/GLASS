@@ -1,0 +1,202 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+/* ------------------------------------------------------------------ tokens
+   Native Windows 11 faces: crisp ClearType, offline, and the overlay feels
+   like part of the OS rather than a web page floating over Meet. */
+:root {
+  --ink: #0e1016;
+  --ink-2: #161924;
+  --glass: rgba(14, 16, 22, 0.58);
+  --glass-strong: rgba(14, 16, 22, 0.82);
+  --edge: rgba(255, 255, 255, 0.09);
+  --edge-strong: rgba(255, 255, 255, 0.16);
+  --text: #f2f4f8;
+  --muted: #a3a9b8;
+  --faint: #6b7180;
+  --lumen: #a8b4ff;      /* listening / neutral accent */
+  --called: #ffc970;     /* the student was addressed */
+  --exact: #7fe0b5;      /* verified by SymPy */
+  --unsure: #ff9b8a;     /* uncertainty, errors */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --level: 0;            /* live audio level 0..1, driven from JS */
+  color-scheme: dark;
+}
+
+@theme {
+  --color-ink: #0e1016;
+  --color-lumen: #a8b4ff;
+  --color-called: #ffc970;
+  --color-exact: #7fe0b5;
+  --color-unsure: #ff9b8a;
+  --color-muted: #a3a9b8;
+  --color-faint: #6b7180;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+}
+
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  font-size: 13px;
+  line-height: 1.45;
+  user-select: none;
+  overflow: hidden;
+}
+::selection { background: rgba(168, 180, 255, 0.35); }
+@layer base { button { font: inherit; color: inherit; } }
+:focus-visible { outline: 1.5px solid var(--lumen); outline-offset: 2px; border-radius: 6px; }
+.drag { -webkit-app-region: drag; }
+.no-drag, button, input, textarea, select, a { -webkit-app-region: no-drag; }
+.selectable { user-select: text; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+/* ------------------------------------------------------------------ overlay surface */
+.page-overlay #root { display: block; }
+.glass-panel {
+  position: relative;
+  background: var(--glass);
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--edge), inset 0 1px 0 0 rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+.glass-tint .glass-panel { background: var(--glass-strong); }
+
+/* The lumen line: a hairline along the top edge that IS the audio meter and the
+   state indicator. Breathes with the teacher's voice; sweeps amber when the
+   student is called on. */
+.lumen {
+  position: absolute; left: 0; right: 0; top: 0; height: 2px; pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%, var(--lumen-color, var(--lumen)) 50%, transparent 100%);
+  opacity: calc(0.18 + var(--level) * 0.9);
+  transform: scaleX(calc(0.25 + var(--level) * 0.75));
+  transition: transform 120ms linear, opacity 120ms linear, background 300ms;
+  filter: drop-shadow(0 0 4px var(--lumen-color, var(--lumen)));
+}
+.lumen.idle { --level: 0 !important; opacity: 0.08; }
+.lumen.called {
+  --lumen-color: var(--called);
+  opacity: 1; transform: none;
+  background: linear-gradient(90deg, transparent, var(--called) 30%, #fff3d6 50%, var(--called) 70%, transparent);
+  background-size: 200% 100%;
+  animation: sweep 1.6s ease-in-out 3;  /* a few sweeps, then still: no endless repaint */
+}
+.lumen.paused { --lumen-color: var(--faint); opacity: 0.35; transform: none; }
+@keyframes sweep { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+.called-ring { box-shadow: inset 0 0 0 1px rgba(255, 201, 112, 0.55), 0 0 0 0 rgba(255, 201, 112, 0); }
+
+@layer components {
+/* ------------------------------------------------------------------ primitives */
+.eyebrow {
+  font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); font-weight: 600;
+}
+.wordmark { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.32em; font-size: 10.5px; color: var(--text); }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px;
+  font-size: 11px; color: var(--muted); background: rgba(255, 255, 255, 0.06); box-shadow: inset 0 0 0 1px var(--edge);
+  white-space: nowrap;
+}
+.chip-exact { color: var(--exact); background: rgba(127, 224, 181, 0.1); box-shadow: inset 0 0 0 1px rgba(127, 224, 181, 0.25); }
+.chip-unsure { color: var(--unsure); background: rgba(255, 155, 138, 0.1); box-shadow: inset 0 0 0 1px rgba(255, 155, 138, 0.25); }
+.chip-called { color: var(--called); background: rgba(255, 201, 112, 0.12); box-shadow: inset 0 0 0 1px rgba(255, 201, 112, 0.3); }
+.chip-lumen { color: var(--lumen); background: rgba(168, 180, 255, 0.1); box-shadow: inset 0 0 0 1px rgba(168, 180, 255, 0.25); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 26px; padding: 0 10px;
+  border-radius: 7px; font-size: 12px; color: var(--muted); background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px var(--edge); cursor: default; transition: background 120ms, color 120ms;
+  border: 0;
+}
+.btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+.btn:active { background: rgba(255, 255, 255, 0.14); }
+.btn:disabled { opacity: 0.45; pointer-events: none; }
+.btn-primary { color: #0e1016; background: var(--lumen); box-shadow: none; font-weight: 600; }
+.btn-primary:hover { background: #bcc6ff; color: #0e1016; }
+.btn-ghost { background: transparent; box-shadow: none; }
+.btn-icon { width: 26px; padding: 0; }
+.btn-danger:hover { color: var(--unsure); }
+
+.field {
+  width: 100%; height: 30px; padding: 0 10px; border-radius: 8px; border: 0; outline: none;
+  background: rgba(255, 255, 255, 0.05); color: var(--text); box-shadow: inset 0 0 0 1px var(--edge);
+  font: inherit; font-size: 12.5px; user-select: text;
+}
+.field::placeholder { color: var(--faint); }
+.field:focus { box-shadow: inset 0 0 0 1px rgba(168, 180, 255, 0.55), 0 0 0 3px rgba(168, 180, 255, 0.12); }
+select.field { appearance: none; padding-right: 26px; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 14px) 13px, calc(100% - 10px) 13px; background-size: 4px 4px; background-repeat: no-repeat; }
+select.field option { background: #1a1d27; }
+
+.mono { font-family: var(--font-mono); font-feature-settings: "calt" 1; }
+.say { font-family: var(--font-display); font-size: 16.5px; line-height: 1.38; font-weight: 600; color: var(--text); letter-spacing: -0.005em; }
+.say-called { font-size: 17.5px; }
+.scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.15) transparent; }
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+
+.dot { width: 6px; height: 6px; border-radius: 99px; background: var(--faint); flex: none; }
+.dot-live { background: var(--lumen); box-shadow: 0 0 8px var(--lumen); }
+.dot-warn { background: var(--called); }
+.dot-err { background: var(--unsure); }
+.dot-ok { background: var(--exact); }
+
+.caret::after { content: "▍"; margin-left: 1px; color: var(--lumen); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.shimmer {
+  background: linear-gradient(90deg, var(--faint) 0%, var(--muted) 50%, var(--faint) 100%);
+  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: sweep 1.8s linear infinite;
+}
+
+}
+
+/* ------------------------------------------------------------------ markdown */
+.md { font-size: 13px; line-height: 1.55; color: #dfe3ec; user-select: text; }
+.md h1, .md h2, .md h3 { font-family: var(--font-display); color: var(--text); margin: 0.9em 0 0.35em; line-height: 1.25; }
+.md h1 { font-size: 20px; font-weight: 700; }
+.md h2 { font-size: 15px; font-weight: 650; }
+.md h3 { font-size: 13.5px; font-weight: 650; }
+.md p { margin: 0.4em 0; }
+.md ul, .md ol { margin: 0.35em 0; padding-left: 1.3em; }
+.md li { margin: 0.15em 0; }
+.md strong { color: var(--text); font-weight: 650; }
+.md code { font-family: var(--font-mono); font-size: 12px; background: rgba(255,255,255,0.07); padding: 1px 5px; border-radius: 5px; }
+.md pre { background: rgba(0,0,0,0.3); padding: 10px; border-radius: 8px; overflow-x: auto; }
+.md em { color: var(--muted); }
+.md table { border-collapse: collapse; margin: 0.5em 0; }
+.md th, .md td { border: 1px solid var(--edge); padding: 4px 8px; }
+.md > :first-child { margin-top: 0; }
+.md .katex { font-size: 1.05em; }
+.md input[type="checkbox"] { accent-color: var(--lumen); margin-right: 6px; }
+
+@layer components {
+/* ------------------------------------------------------------------ dashboard */
+.page-dashboard body, body.page-dashboard { background: rgba(10, 12, 18, 0.55); user-select: none; }
+.panel { background: rgba(255, 255, 255, 0.035); border-radius: 12px; box-shadow: inset 0 0 0 1px var(--edge); }
+.panel-solid { background: rgba(18, 20, 28, 0.72); border-radius: 12px; box-shadow: inset 0 0 0 1px var(--edge); }
+.nav-item { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; border-radius: 8px; color: var(--muted); font-size: 13px; cursor: default; }
+.nav-item:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+.nav-item.active { background: rgba(168, 180, 255, 0.12); color: var(--text); box-shadow: inset 2px 0 0 var(--lumen); }
+.h-title { font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: -0.01em; }
+.toggle { width: 34px; height: 20px; border-radius: 99px; background: rgba(255,255,255,0.12); position: relative; transition: background 150ms; flex: none; border: 0; }
+.toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 99px; background: #fff; transition: transform 150ms; }
+.toggle[aria-checked="true"] { background: var(--lumen); }
+.toggle[aria-checked="true"]::after { transform: translateX(14px); background: #0e1016; }
+.kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 6px; border-radius: 5px; background: rgba(255,255,255,0.07); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.08), inset 0 0 0 1px var(--edge); color: var(--muted); }
+
+}
+
+/* ------------------------------------------------------------------ snip */
+.page-snip, .page-snip body { background: transparent; cursor: crosshair; }
+
+/* Native acrylic: Windows 11 rounds the window at 8px — match it so no blur slivers show at the corners. */
+body.page-overlay:not(.glass-tint) .glass-panel { border-radius: 8px; }
