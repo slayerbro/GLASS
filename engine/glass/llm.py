@@ -208,6 +208,21 @@ class Scheduler:
                 j.future.cancel()
         self._queue.clear()
 
+    def cancel_where(self, pred) -> int:
+        """Cancel queued and running jobs whose (key, priority) match `pred`."""
+        n = 0
+        for j in list(self._queue):
+            if pred(j.key, j.priority):
+                self._queue.remove(j)
+                if not j.future.done():
+                    j.future.cancel()
+                n += 1
+        if self._running and pred(self._running[0].key, self._running[0].priority):
+            self._running[1].cancel()
+            n += 1
+        self.stats["cancelled"] = self.stats.get("cancelled", 0) + n
+        return n
+
     def snapshot(self) -> dict:
         run = self._running[0] if self._running else None
         return {

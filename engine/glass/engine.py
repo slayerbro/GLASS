@@ -407,7 +407,16 @@ class Engine:
             self.attention = {"t": time.time(), "confidence": hit.confidence, "level": hit.level, "text": seg.text}
             bus.emit("attention", **self.attention)
 
-        if sig.is_question and not sig.check and not sig.rhetorical:
+        directed = bool(hit and hit.confidence >= 0.45)
+        recent_q = self.mem.active_question and time.time() - self.mem.active_question["t"] < 120
+        if sig.is_question and not sig.check and not sig.rhetorical and sig.generic:
+            # "Anyone?" / "What's the answer?" / "Where is it?": no lesson content of its own.
+            # It can only be about the last real question — never start a new answer for it.
+            if recent_q or directed:
+                self._spawn(self._escalate_recent(hit, seg) if directed else self._mark_waiting(seg))
+            else:
+                log.info("ignored content-free question: %r", sig.text)
+        elif sig.is_question and not sig.check and not sig.rhetorical:
             self._spawn(self._answer_question(sig, hit, seg))
         elif hit and hit.confidence >= 0.45 and not sig.is_question:
             # "Sanad?" / "Sanad, go on" -> the most recent meaningful question is now his
@@ -440,6 +449,19 @@ class Engine:
             self.pending_q["answer_id"] = self.mem.active_question.get("answer_id")
         await task
 
+    async def _mark_waiting(self, seg) -> None:
+        """The teacher nudges ("Anyone?") about the question already on the overlay."""
+        aq = self.mem.active_question
+        ans = self.answers.answers.get((aq or {}).get("answer_id", ""))
+        if not ans:
+            return
+        ans["waiting"] = True
+        self.answers._push(ans, force=True)
+        self.pending_q = {"answer_id": ans["id"], "t_end": seg.t1, "waiting": True, "utt_id": seg.id, "text": aq["text"]}
+        bus.emit("question.waiting", answer_id=ans["id"], text=aq["text"])
+        if self.mode != "direct":
+            self._set_mode("question")
+
     async def _escalate_recent(self, hit, seg) -> None:
         aq = self.mem.active_question
         if aq and time.time() - aq["t"] < 150:
@@ -456,7 +478,7 @@ class Engine:
             if u.source != "class":
                 continue
             sig = classify_question(u.text)
-            if sig.is_question and not sig.check:
+            if sig.is_question and not sig.check and not sig.generic:
                 await self._answer_question(sig, hit, seg)
                 return
         self._set_mode("direct")  # addressed, but no question yet; the overlay says so
@@ -619,6 +641,9 @@ class Engine:
                     self._set_mode("question")
             if pq and now - pq["t_end"] > 90:
                 self.pending_q = None
+            if now - self.answers.last_llm_use > 900:  # idle 15 min mid-lesson: refresh keep_alive
+                self.answers.last_llm_use = now
+                self._spawn(self.llm.warm(self.answers.text_model, self.answers.num_ctx))
             # mode decay
             since = now - self._mode_since
             last_speech = max(self.last_activity.values())

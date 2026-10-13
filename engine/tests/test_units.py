@@ -283,3 +283,64 @@ def test_snip_crops_frozen_frame(monkeypatch):
     monkeypatch.setattr(svc.ocr, "read", fake_read)
     png, text, blank = asyncio.run(svc.snip(200, 100, 400, 200))
     assert fake_read.shape[:2] == (200, 400) and not blank and svc._frozen is None
+
+
+# ---------------------------------------------------------------- relevance: not every question needs an answer
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("text", [
+    "Where is it?", "No questions?", "Any questions?", "Can you see my screen?", "Who is next?", "Have you finished?",
+    "Is everyone here?", "Anyone?", "What is the answer?", "Can you hear me?", "What page are we on?", "Are you done?",
+    "Shall we move on?", "How long do we have left?", "Is it working now?", "Who wants to go first?",
+])
+def test_classroom_talk_is_never_answered(text):
+    s = classify_question(text)
+    assert s.check or s.generic, (text, s)
+
+
+@_pytest.mark.parametrize("text,kind", [
+    ("What does MAC address stand for?", "acronym"),
+    ("What does DNA stand for?", "acronym"),
+    ("Where is the mitochondria found?", "recall"),
+    ("Why is the sky blue?", "explanation"),
+    ("How does a router forward packets?", "explanation"),
+    ("Where is the CPU located on the motherboard?", "recall"),
+])
+def test_lesson_questions_are_answered(text, kind):
+    s = classify_question(text)
+    assert s.is_question and not s.check and not s.generic and s.kind == kind, (text, s)
+
+
+def test_newest_question_cancels_stale_class_answer_but_not_directed():
+    async def run():
+        s = Scheduler()
+        s.start()
+
+        async def slow():
+            await asyncio.sleep(5)
+            return "old"
+
+        directed = s.submit(DIRECT, slow, key="answer:q_dir")
+        await asyncio.sleep(0.05)
+        old = s.submit(ANSWER, slow, key="answer:q_old")
+        n = s.cancel_where(lambda k, p: k.startswith("answer:q_") and p != DIRECT and k != "answer:q_new")
+        await asyncio.sleep(0)
+        res = (old.cancelled(), directed.cancelled(), n)
+        await s.stop()
+        return res
+
+    old_cancelled, directed_cancelled, n = asyncio.run(run())
+    assert old_cancelled and not directed_cancelled and n == 1
+
+
+def test_similar_but_different_questions_are_not_repeats():
+    import tempfile, pathlib
+    from glass.answer import AnswerEngine
+    from glass.config import Settings
+
+    a = AnswerEngine(None, None, None, None, Settings(pathlib.Path(tempfile.mkdtemp()) / "s.json"), None, lambda *x, **k: None)
+    assert not a._same_question("What does RAM stand for?", "What does MAC address stand for?")
+    assert not a._same_question("What does ROM stand for?", "What does RAM stand for?")
+    assert a._same_question("Sanad, what does RAM stand for?", "What does RAM stand for?")
+    assert a._same_question("So what does RAM stand for?", "what does RAM stand for")

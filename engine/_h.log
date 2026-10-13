@@ -1,0 +1,27 @@
+waiting for models…
+models ready: {'state': 'ready', 'model': 'large-v3-turbo', 'device': 'cuda', 'compute': 'float16', 'load_s': 17.5} {'state': 'ready', 'model': 'qwen3:4b-instruct', 'ollama': '0.34.2', 'load_s': 0.0}
+
+== relevance
+   [PASS] only the real question got an answer — ['What does RAM stand for?'] | heard: ['Can everyone see my screen?', 'Hmm, where is it?', 'No questions', 'What does RAM stand for?']
+   [PASS] answer is the expansion — RAM stands for Random Access Memory.
+   [PASS] newer question answered (read-only memory) — ROM stands for Read Only Memory.
+
+== rhetorical
+   [PASS] answer panel never elevated — ['passive']
+   [PASS] question demoted as self-answered/rhetorical — []
+
+== direct_name
+   [PASS] name detected (high) — [1.0]
+   [PASS] answer generated — Combustion is exothermic because the bonds in the products (like CO₂ and H₂O) are stronger than the bonds in the reactants (like fuel and ox
+   [PASS] marked as directed 
+   [PASS] explanation type — explanation
+   [PASS] mentions bonds/energy 
+   [PASS] teacher-waiting detected after silence 
+   [PASS] overlay mode = direct — direct
+
+== general
+   [PASS] answer generated — The powerhouse of the cell is the mitochondria.
+   [PASS] not marked as directed 
+
+4/4 scenarios passed. Report: tests/report.md
+engine shutdown in 11.70s

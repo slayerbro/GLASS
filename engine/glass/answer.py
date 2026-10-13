@@ -22,7 +22,7 @@ from typing import Any, Callable
 from rapidfuzz import fuzz
 
 from . import prompts as P
-from .detect import NameHit, QuestionSignal, extract_reference, question_kind
+from .detect import NameHit, QuestionSignal, content_words, extract_reference, question_kind
 from .llm import ANSWER, DIRECT, REVISION, TASK, VISION, LLMError, OllamaClient, Scheduler, reraise_if_cancelled
 from .mathsolve import MathService, find_problems
 from .memory import LessonMemory
@@ -53,6 +53,7 @@ class AnswerEngine:
         self.vision_model = "qwen3-vl:4b-instruct"
         self.num_ctx = 8192
         self._last_emit: dict[str, float] = {}
+        self.last_llm_use = time.time()
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -153,7 +154,7 @@ class AnswerEngine:
             return None
         # teacher repeating the active question? reuse, just escalate
         active = self.mem.active_question
-        if active and time.time() - active["t"] < 75 and fuzz.token_set_ratio(sig.text, active["text"]) > 85:
+        if active and time.time() - active["t"] < 75 and self._same_question(sig.text, active["text"]):
             ans = self.answers.get(active.get("answer_id", ""))
             if ans:
                 if name_hit and (not ans["directed"] or name_hit.confidence > ans["directed"]["confidence"]):
@@ -170,8 +171,26 @@ class AnswerEngine:
         self.mem.active_question["answer_id"] = ans["id"]
         self._push(ans, force=True)
         prio = DIRECT if name_hit and name_hit.confidence >= 0.45 else ANSWER
+        # newest question wins: an unfinished answer to an older class question is no longer
+        # useful and must not make this one wait (answers addressed to the student are kept)
+        n = self.sched.cancel_where(lambda key, p: (key.startswith("answer:q_") or key.startswith("verify:"))
+                                    and p != DIRECT and key != f"answer:{qid}")
+        if n:
+            log.info("cancelled %d stale answer job(s) for a newer question", n)
+        if prio == DIRECT:
+            self.sched.cancel_where(lambda key, p: key.startswith("verify:"))
         await self._run_answer(ans, sig.text, sig.reference, prio, extra=[])
         return ans
+
+    def _same_question(self, a: str, b: str) -> bool:
+        """Is the teacher repeating the question (not asking a similar one)?
+        "What does RAM stand for?" vs "What does ROM stand for?" share most words
+        but differ in the one that matters, so compare the meaningful words."""
+        names = {x.lower() for x in [self.settings.get("student_name") or "", *(self.settings.get("name_aliases") or [])] if x}
+        ca, cb = set(content_words(a, names)), set(content_words(b, names))
+        if not ca or not cb:
+            return False
+        return ca == cb or (len(ca & cb) / len(ca | cb) >= 0.8 and fuzz.token_sort_ratio(a, b) >= 85)
 
     async def clarify(self, text: str) -> dict:
         """Instant context: the student typed a few words. Re-answer the active
@@ -249,7 +268,10 @@ class AnswerEngine:
         system = P.SYSTEM_ANSWER.format(name=self.name, guide=P.guide(self.mem.subject_id, calc=True), format=P.FORMAT_RULES)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": context + "\n\n" + qline}]
 
+        t_sub = time.perf_counter()
+
         async def job():
+            ans["latency"]["queued_ms"] = round((time.perf_counter() - t_sub) * 1000)
             await self._stream_answer(ans, messages, t0)
 
         fut = self.sched.submit(prio, job, key=f"answer:{ans.get('qid') or ans['id']}", max_age=30)
@@ -354,6 +376,10 @@ class AnswerEngine:
 
     def _finish(self, ans: dict) -> None:
         ans["status"] = "done"
+        lat = ans["latency"]
+        log.info("answer kind=%s queued=%sms first=%sms say=%sms total=%sms model=%s | %s", ans["kind"], lat.get("queued_ms"),
+                 lat.get("first_ms"), lat.get("say_ms"), lat.get("total_ms"), self.text_model, (ans["question"] or "")[:60])
+        self.last_llm_use = time.time()
         # TYPE none = "not a question needing an answer" — but never hide it when the
         # student was addressed or when the model is unsure what was meant
         if ans["kind"] == "none" and ans["mode"] == "question" and not ans["directed"] \

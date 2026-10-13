@@ -24,6 +24,8 @@ SCENARIOS = {
     "equation_spoken": "The equation for speed is distance divided by time, so if a car travels 120 metres in 8 seconds, what's its speed?",
     "vague": "Sanad, why does that happen?",
     "silence": "",
+    "classroom_talk": "Can everyone see my screen? Hmm, where is it? No questions? Okay. What does RAM stand for?",
+    "two_questions": "What does CPU stand for? Actually, never mind, what does ROM stand for?",
 }
 
 

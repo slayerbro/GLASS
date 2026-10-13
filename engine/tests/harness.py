@@ -379,10 +379,36 @@ async def sc_snip(engine: Engine) -> Result:
     return r
 
 
+async def sc_relevance(engine: Engine) -> Result:
+    r = Result("Relevance + newest question wins")
+    await new_session(engine, "cs")
+    t0 = time.time()
+    t_end = await feed(engine, load_wav(AUDIO / "classroom_talk.wav"))
+    await asyncio.sleep(4)
+    shown = [a for a in answers_since(t0).values() if a["status"] != "superseded" and not a.get("rhetorical")]
+    finals = [e["text"] for e in EVENTS if e["type"] == "transcript.final" and e["ts"] >= t0]
+    r.check("only the real question got an answer", len(shown) == 1 and "RAM" in shown[0]["question"],
+            f"{[a['question'] for a in shown]} | heard: {finals}")
+    r.check("answer is the expansion", bool(shown) and "random access memory" in shown[0]["say"].lower(), shown[0]["say"] if shown else "")
+    if shown:
+        ts = first_say_time(shown[0]["id"], t0)
+        r.metrics["speech_end_to_answer_s"] = round(ts - t_end, 2) if ts else None
+    t1 = time.time()
+    t_end = await feed(engine, load_wav(AUDIO / "two_questions.wav"))
+    await asyncio.sleep(4)
+    rom = [a for a in answers_since(t1).values() if "ROM" in a["question"] and a["status"] == "done"]
+    r.check("newer question answered (read-only memory)", bool(rom) and "read" in rom[0]["say"].lower(), rom[0]["say"] if rom else "none")
+    if rom:
+        ts = first_say_time(rom[0]["id"], t1)
+        r.metrics["newer_question_answer_s"] = round(ts - t_end, 2) if ts else None
+        r.metrics["newer_question_queued_ms"] = rom[0]["latency"].get("queued_ms")
+    return r
+
+
 SCENARIOS = {
     "direct_name": sc_direct_name, "general": sc_general, "rhetorical": sc_rhetorical,
     "screen_question": sc_screen_question, "equation_spoken": sc_equation_spoken, "written_equation": sc_written_equation,
-    "tasks": sc_tasks, "vague": sc_vague_then_context, "notes": sc_notes_catchup, "silence": sc_silence, "blurry": sc_blurry, "snip": sc_snip,
+    "tasks": sc_tasks, "vague": sc_vague_then_context, "notes": sc_notes_catchup, "silence": sc_silence, "blurry": sc_blurry, "snip": sc_snip, "relevance": sc_relevance,
 }
 
 

@@ -138,6 +138,43 @@ CHECK_PATTERNS = re.compile(
     r"can you (all )?(see|hear) (me|my screen|this)|are you (all )?(there|with me)|is everyone here|ready\?$)",
     re.I,
 )
+# Classroom management, tech trouble, attendance, time, permission and small talk:
+# questions, but nothing a student needs an answer suggestion for.
+LOGISTICS = re.compile(
+    r"\b(no questions|any (other |more |further )?questions|questions\?$|"
+    r"(hear|see) (me|us|it|that|my screen|the screen|the slide|this)|(my|your|the) (mic|microphone|camera|audio|sound|"
+    r"internet|connection|wifi|link|chat|screen|tab)|unmute|muted|frozen|lagging|lag\b|loading|is it working|"
+    r"(not|isn't|is not) working|share (my|your|the) screen|sharing|joined|join the|kicked|the call|the meeting|"
+    r"who('s| is) (here|there|missing|absent|next|talking|speaking|that)|who (else|wants to|is going)|"
+    r"(is|are) (everyone|everybody|you all|you guys|we all) (here|there|back|done|finished|ready|ok|okay|good|with me)|"
+    r"(have|did|has) (you|everyone|everybody|anyone|anybody|we) (finish|finished|done|completed|started)|"
+    r"are (you|we|they) (done|finished|ready|okay|ok|good|back|there|still there)|"
+    r"how long|what time|how much time|how many minutes|can i (go|leave|share|ask|use|take)|may i|"
+    r"shall we|should we (start|stop|move|continue|carry on|begin)|can we (start|stop|move on|continue|begin)|"
+    r"where (were|are) we|what (page|slide|question|number) (are|were) we on|who('s| is) going (first|next)|"
+    r"how are you|how was your|how's everyone|good morning|good afternoon|you okay|everything (ok|okay|alright|fine)|"
+    r"are you (ok|okay|alright|sure)|what happened\??$|what's going on|why are you (laughing|late|muted))\b",
+    re.I,
+)
+
+# words that carry no lesson content: a question made only of these ("where is it?",
+# "what's the answer?", "anyone?") can only be about something said or shown earlier
+_FILLER = set("""
+a an the it its it's this that these those there here they them their he she him her his hers you your yours we us our i me my
+mine is are was were be been being am do does did done doing have has had having can could would will shall should may might
+must what what's whats which who whom whose why how when where where's whats how's who's anyone anybody someone somebody
+everyone everybody one ones thing things stuff so ok okay right now then next else well um uh yeah yes no not just really
+please answer answers question questions number go get got think mean know see say said tell try again more any some all
+about of to in on at for with from by up out over this one guys class team sir miss
+""".split())
+
+
+def content_words(text: str, name_aliases: set[str] | None = None) -> list[str]:
+    words = re.findall(r"[a-z][a-z']*|\d+", text.lower())
+    skip = _FILLER | (name_aliases or set())
+    return [w for w in words if w not in skip and len(w) > 1 or w.isdigit()]
+
+
 RHETORICAL_FOLLOW = re.compile(
     r"^(well|because|it's|it is|that's|that is|the answer|this is|so,? (it|the|that)|basically|simply|it was|they|we|let me|let's)\b",
     re.I,
@@ -185,6 +222,8 @@ class QuestionSignal:
     check: bool = False
     reference: dict = field(default_factory=dict)
     deictic: bool = False  # refers to something not in the words ("why does that happen?")
+    generic: bool = False  # no lesson content at all ("where is it?", "anyone?", "what's the answer?")
+    logistics: bool = False  # classroom management / tech / small talk — never answered
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
@@ -205,6 +244,8 @@ def question_kind(q: str) -> str:
                  r"gradient|probability|mean|median|speed|density|moles?|mass of|energy|current|resistance)\b", s) \
             or re.search(r"\d\s*[x+\-*/^=]|\bx\b", s):
         return "calculation"
+    if re.search(r"\b(stand for|stands for|short for|abbreviation|acronym|full form)\b", s):
+        return "acronym"
     if re.search(r"\b(give (me )?(an |one |two |some )?examples?|example of|such as|name (a|an|one|two|three))\b", s):
         return "example"
     if re.search(r"\b(difference between|compare|contrast|similarit)", s):
@@ -238,6 +279,8 @@ def classify_question(text: str, next_text: str = "") -> QuestionSignal:
             continue
         if CHECK_PATTERNS.search(s):
             return QuestionSignal(True, "check", s, 0.8, check=True)
+        if LOGISTICS.search(s):
+            return QuestionSignal(True, "logistics", s, 0.8, check=True, logistics=True)
         if TASK_CUE.search(s) and not is_q_mark:
             continue  # instructions handled by the task detector
         following = " ".join(sents[idx + 1:]) or next_text
@@ -245,8 +288,9 @@ def classify_question(text: str, next_text: str = "") -> QuestionSignal:
         conf = 0.5 + (0.25 if is_q_mark else 0) + (0.15 if starts or imperative else 0)
         ref = extract_reference(s)
         deictic = bool(DEICTIC.search(s)) and not ref and len(s.split()) < 12
+        generic = not ref and not content_words(clean)
         return QuestionSignal(True, question_kind(s), s, round(min(conf, 0.95), 2), rhetorical=rhetorical,
-                              reference=ref, deictic=deictic)
+                              reference=ref, deictic=deictic, generic=generic)
     return QuestionSignal(False)
 
 
