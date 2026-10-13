@@ -1,6 +1,6 @@
 // WebSocket client for the local engine + the shared Zustand store.
 import { create } from 'zustand';
-import type { Answer, EngineStatus, Lesson, Metrics, Mode, Notes, ScreenObs, Session, Settings, Task, Utter } from './types';
+import type { Answer, GlassAsk, EngineStatus, Lesson, Metrics, Mode, Notes, ScreenObs, Session, Settings, Task, Utter } from './types';
 
 interface EngineProc { state: string; message?: string; port?: number; token?: string }
 
@@ -27,13 +27,15 @@ export interface GlassState {
   attention: { t: number; confidence: number; level: string; text: string } | null;
   waitingFor: string | null; // answer id the teacher is waiting on
   focusAnswer: string | null; // answer shown in the overlay
+  asks: GlassAsk[]; // questions GLASS is asking the student
+  registerCall: { t: number; text: string } | null;
 }
 
 const initial: GlassState = {
   proc: { state: 'starting' }, connected: false, status: null, session: null, lastEnded: null, mode: 'idle',
   lesson: { subject_id: null, topic: '', subtopic: '', summary: '' }, task: null, taskHistory: [], answers: {}, order: [],
   transcript: [], partial: null, speaking: false, screen: null, notes: null, notesMd: '', settings: null, metrics: {},
-  attention: null, waitingFor: null, focusAnswer: null,
+  attention: null, waitingFor: null, focusAnswer: null, asks: [], registerCall: null,
 };
 
 export const useGlass = create<GlassState>(() => initial);
@@ -94,11 +96,13 @@ function onEvent(e: any) {
     case 'answer.update': upsertAnswer(e.answer); break;
     case 'question.waiting': set({ waitingFor: e.answer_id }); break;
     case 'attention': set({ attention: e }); break;
+    case 'glass.ask': set({ asks: [...get().asks.filter((a) => a.id !== e.id), e].slice(-3) }); break;
+    case 'register': set({ registerCall: { t: e.t, text: e.text } }); break;
     case 'task.update': set({ task: e.task, taskHistory: e.history || [] }); break;
     case 'speech.activity': if (e.source === 'class') set({ speaking: e.speaking }); break;
     case 'transcript.partial': set({ partial: { id: e.id, source: e.source, text: e.text, t0: e.t0, partial: true } }); break;
     case 'transcript.final': {
-      const tr = [...get().transcript, { id: e.id, source: e.source, text: e.text, t0: e.t0, t1: e.t1 }].slice(-300);
+      const tr = [...get().transcript, { id: e.id, source: e.source, text: e.text, t0: e.t0, t1: e.t1, noise: e.noise }].slice(-300);
       const p = get().partial;
       set({ transcript: tr, partial: p && p.id === e.id ? null : p });
       break;
@@ -154,6 +158,16 @@ export function prettyAccel(a: string) {
 }
 export const subjectName = (id: string | null | undefined, settings: Settings | null) =>
   settings?.subjects.find((s) => s.id === id)?.name ?? (id ? id : '');
+
+export const dismissAsk = (id: string) => set({ asks: get().asks.filter((a) => a.id !== id) });
+
+/** Open a file picker and add a book / notes file to the student's texts. */
+export async function addStudyText(subjectId: string | null): Promise<string> {
+  const path = await window.glass.invoke<string | null>('texts:pick');
+  if (!path) return '';
+  const info = await cmd<{ title: string; chunks: number }>('texts.add', { path, subject_id: subjectId });
+  return `Added “${info.title}” (${info.chunks} passages). Quotes will now come from it.`;
+}
 
 export function fmtClock(t: number) {
   return new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });

@@ -25,6 +25,11 @@ class Utterance:
     text: str
     t0: float
     t1: float
+    ctx: str | None = None  # compacted text for the AI (noise removed); "" = pure noise
+
+    @property
+    def useful(self) -> str:
+        return self.text if self.ctx is None else self.ctx
 
 
 @dataclass
@@ -104,7 +109,9 @@ class LessonMemory:
             if u.source == "me" and not include_me:
                 continue
             who = "Student" if u.source == "me" else "Teacher"
-            line = f"{who}: {u.text}"
+            if not u.useful:
+                continue  # register, tech chatter, small talk: not lesson context
+            line = f"{who}: {u.useful}"
             if total + len(line) > max_chars:
                 break
             lines.append(line)
@@ -189,7 +196,8 @@ class LessonMemory:
         self.questions = self.questions[-60:]
 
     def transcript_since(self, t: float) -> str:
-        return "\n".join(f"{'Student' if u.source == 'me' else 'Teacher'}: {u.text}" for u in self.utterances if u.t1 >= t)
+        return "\n".join(f"{'Student' if u.source == 'me' else 'Teacher'}: {u.useful}" for u in self.utterances
+                         if u.t1 >= t and u.useful)
 
     def full_transcript_chars(self) -> int:
         return sum(len(u.text) for u in self.utterances)

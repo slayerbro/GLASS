@@ -336,6 +336,14 @@ ipcMain.on('snip:done', (_e, r) => {
   }, 180);
 });
 
+ipcMain.handle('texts:pick', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: 'Add a book or notes to GLASS',
+    properties: ['openFile'],
+    filters: [{ name: 'Books and notes', extensions: ['pdf', 'epub', 'docx', 'txt', 'md'] }],
+  });
+  return canceled || !filePaths.length ? null : filePaths[0];
+});
 ipcMain.handle('ui:get', () => ({ ...ui, defaults: DEFAULT_SHORTCUTS }));
 ipcMain.handle('ui:set', (_e, patch) => {
   const glassChanged = patch.glass && patch.glass !== ui.glass;

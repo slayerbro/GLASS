@@ -1,8 +1,9 @@
 import { motion, AnimatePresence } from 'motion/react';
-import { Check, CircleAlert, Clock3, RotateCcw, Sparkles } from 'lucide-react';
+import { useState } from 'react';
+import { BookOpen, Check, CircleAlert, Clock3, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
 import type { Answer } from '../lib/types';
 import { Markdown } from '../components/Markdown';
-import { cmd } from '../lib/engine';
+import { addStudyText, cmd } from '../lib/engine';
 
 export type Level = 'quick' | 'explain' | 'detailed';
 
@@ -44,6 +45,7 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
         {a.status === 'error' ? <ErrorLine a={a} /> :
           !a.body ? <Thinking label={a.status === 'reading' ? 'Reading your selection…' : 'Thinking…'} /> :
             <div className="max-h-[380px] scroll pr-1 -mr-1"><Markdown text={a.body} className={streaming ? 'caret' : ''} /></div>}
+        <Quotes a={a} />
         {a.mode === 'snip' && a.status === 'done' && a.ocr && (
           <div className="mt-2.5 flex gap-1">
             <button className="btn" onClick={() => cmd('tutor', { mode: 'solution', focus: a.ocr }).catch(() => {})}>Show working</button>
@@ -104,6 +106,8 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
       {a.answered_by === 'teacher' && (
         <div className="mt-1 text-[11px] text-faint">The teacher answered it: <span className="text-muted">{a.teacher_answer}</span></div>
       )}
+      <Quotes a={a} />
+      {a.ask && a.status === 'done' && <AskOptions a={a} />}
 
       <AnimatePresence initial={false}>
         {level !== 'quick' && a.why && (
@@ -123,6 +127,69 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
       {a.say && (
         <div className="mt-2.5 flex items-center gap-1">
           <Seg level={level} setLevel={(l) => { setLevel(l); if (l === 'detailed' && !a.detailed) cmd('answer.expand', { id: a.id }).catch(() => {}); }} />
+          {a.status === 'done' && <Feedback a={a} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** GLASS is unsure: one tap tells it what the teacher meant. */
+function AskOptions({ a }: { a: Answer }) {
+  return (
+    <div className="mt-2 rounded-[8px] px-2.5 py-2 bg-[rgba(168,180,255,0.07)] shadow-[inset_0_0_0_1px_rgba(168,180,255,0.2)]">
+      <div className="text-[11.5px] text-lumen">{a.ask!.q}</div>
+      <div className="flex flex-wrap gap-1 mt-1.5">
+        {a.ask!.options.map((o) => (
+          <button key={o} className="btn h-[22px] text-[11.5px]" onClick={() => cmd('context', { text: o }).catch(() => {})}>{o}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Every quotation is checked word-for-word against the student's own copy of the text. */
+function Quotes({ a }: { a: Answer }) {
+  const [msg, setMsg] = useState('');
+  if (!a.quotes?.length || a.status !== 'done') return null;
+  const noBook = a.quotes.some((q) => !q.ok && q.texts === 0);
+  return (
+    <div className="mt-2 space-y-1">
+      {a.quotes.map((q) => (
+        <div key={q.q} className={`text-[11px] leading-snug flex gap-1.5 ${q.ok ? 'text-exact' : 'text-unsure'}`}>
+          {q.ok ? <Check size={11} className="mt-[2px] flex-none" /> : <CircleAlert size={11} className="mt-[2px] flex-none" />}
+          <span>“{q.q.length > 60 ? q.q.slice(0, 60) + '…' : q.q}” {q.ok ? `— found in ${q.source}` : q.texts ? '— not found in your text, don’t use it' : '— can’t be checked and may be made up — don’t use it'}</span>
+        </div>
+      ))}
+      {noBook && (
+        <button className="btn h-[22px] text-[11px]" onClick={async () => { try { setMsg(await addStudyText(a.subject_id ?? null)); } catch (e) { setMsg((e as Error).message); } }}>
+          <BookOpen size={11} />Add the book to check quotes
+        </button>
+      )}
+      {msg && <div className="text-[11px] text-muted">{msg}</div>}
+    </div>
+  );
+}
+
+const REASONS: [string, string][] = [
+  ['not_answer', "Didn't answer it"], ['wrong', 'Wrong'], ['too_long', 'Too long'], ['too_simple', 'Too basic'],
+  ['not_question', 'Not a real question'],
+];
+
+/** Feedback GLASS learns from (preferences + questions to ignore). */
+function Feedback({ a }: { a: Answer }) {
+  const [open, setOpen] = useState(false);
+  const send = (rating: string, reason = '') => { setOpen(false); cmd('feedback', { id: a.id, rating, reason }).catch(() => {}); };
+  if (a.feedback === 'up') return <span className="ml-auto text-[11px] text-exact">Thanks</span>;
+  return (
+    <div className="ml-auto flex items-center gap-0.5 relative">
+      <button className="btn btn-ghost btn-icon h-[22px] w-[22px]" title="Good answer" onClick={() => send('up')}><ThumbsUp size={11} /></button>
+      <button className="btn btn-ghost btn-icon h-[22px] w-[22px]" title="Something's wrong" onClick={() => setOpen(!open)}><ThumbsDown size={11} /></button>
+      {open && (
+        <div className="absolute right-0 bottom-[26px] z-10 glass-panel p-1 flex flex-col min-w-[150px]" style={{ background: 'rgba(20,22,30,0.97)' }}>
+          {REASONS.map(([k, label]) => (
+            <button key={k} className="btn btn-ghost h-[24px] justify-start text-[11.5px]" onClick={() => send('down', k)}>{label}</button>
+          ))}
         </div>
       )}
     </div>

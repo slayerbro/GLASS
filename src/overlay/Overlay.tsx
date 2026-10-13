@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Thermometer, Camera, Eye, LayoutDashboard, Minus, Pause, Play, Square, CornerDownLeft, ScanText, History, Lightbulb, NotebookPen, ListTodo } from 'lucide-react';
-import { cmd, connectEngine, readiness, subjectName, useGlass } from '../lib/engine';
+import { addStudyText, cmd, connectEngine, dismissAsk, readiness, subjectName, useGlass } from '../lib/engine';
 import type { Answer } from '../lib/types';
 import { AnswerCard, type Level } from './AnswerCard';
 import { TaskCard } from './TaskCard';
@@ -19,6 +19,9 @@ export function Overlay() {
   const [level, setLevel] = useState<Level>('quick');
   const [input, setInput] = useState('');
   const [inputMode, setInputMode] = useState<'context' | 'attempt'>('context');
+  // Ask = a new question about the lesson; Fix = context / corrections for the answer on screen
+  const [tab, setTab] = useState<'ask' | 'fix'>('ask');
+  const [tabTouched, setTabTouched] = useState(false);
   const [hint, setHint] = useState('');
   const [subjectPick, setSubjectPick] = useState<string>('');
   const [ghost, setGhost] = useState(false);
@@ -40,6 +43,10 @@ export function Overlay() {
   }, [s.focusAnswer, s.answers]);
 
   useEffect(() => { setLevel('quick'); }, [s.focusAnswer]);
+  // follow the situation unless the student picked a tab: a fresh class question -> Fix, otherwise Ask
+  useEffect(() => {
+    if (!tabTouched) setTab(answer && answer.mode === 'question' && answer.status !== 'error' ? 'fix' : 'ask');
+  }, [answer?.id, tabTouched]);
 
   // what fills the panel
   let body: 'status' | 'start' | 'answer' | 'task' | 'passive' = 'passive';
@@ -119,9 +126,11 @@ export function Overlay() {
     setInput('');
     try {
       if (inputMode === 'attempt') await cmd('tutor', { mode: 'check', attempt: text, task: s.task });
+      else if (tab === 'ask') await cmd('ask', { text });
       else await cmd('context', { text });
     } catch (e) { flash(e as Error); }
     setInputMode('context');
+    setTabTouched(false);
     inputRef.current?.blur();
   }
 
@@ -136,8 +145,9 @@ export function Overlay() {
   const lumenClass = called ? 'called' : !s.session ? 'idle' : s.session.paused ? 'paused' : '';
   const level01 = s.speaking ? 0.85 : 0.12;
   const placeholder = inputMode === 'attempt' ? 'Type your answer or working to check…'
-    : answer && (answer.conf === 'low' || answer.unsure) ? 'What is the teacher referring to?'
-      : answer ? 'Add context or correct me…' : 'Ask, or add a few words of context…';
+    : tab === 'ask' ? 'Ask anything about the lesson…'
+      : answer && (answer.conf === 'low' || answer.unsure) ? 'What is the teacher referring to?'
+        : 'Context, or "answer it", "shorter", "quotes"…';
 
   if (pill) {
     return (
@@ -185,6 +195,8 @@ export function Overlay() {
         </div>
 
         <ThermalNotice />
+        <RegisterNote />
+        <GlassAsks onError={flash} />
 
         <AnimatePresence mode="popLayout" initial={false}>
           <motion.div key={body + (body === 'answer' ? answer?.id : '')} layout initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
@@ -218,7 +230,20 @@ export function Overlay() {
         {/* instant context + quick actions */}
         {ready.ok && (
           <div className="px-2.5 pb-2.5 pt-0.5">
-            <div className="relative">
+            <div className="relative flex items-center gap-1.5">
+              {inputMode !== 'attempt' && (
+                <div className="inline-flex p-0.5 rounded-[8px] bg-white/[0.05] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)] flex-none"
+                  role="tablist" aria-label="What the box does">
+                  {(['ask', 'fix'] as const).map((k) => (
+                    <button key={k} role="tab" aria-selected={tab === k} title={k === 'ask' ? 'Ask a new question about the lesson' : 'Fix the answer: add context or say "answer it", "shorter", "quotes"'}
+                      onMouseDown={() => window.glass.send('overlay:focus', true)}
+                      onClick={() => { setTab(k); setTabTouched(true); inputRef.current?.focus(); }}
+                      className={`h-[24px] px-2 rounded-[6px] text-[11.5px] ${tab === k ? 'bg-white/[0.12] text-[#f2f4f8]' : 'text-faint hover:text-muted'}`}>
+                      {k === 'ask' ? 'Ask' : 'Fix'}
+                    </button>
+                  ))}
+                </div>
+              )}
               <input ref={inputRef} className="field pr-8" value={input} placeholder={placeholder} spellCheck={false}
                 onMouseDown={() => window.glass.send('overlay:focus', true)}
                 onFocus={() => window.glass.send('overlay:focus', true)}
@@ -226,6 +251,7 @@ export function Overlay() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') submit();
+                  if (e.key === 'Tab') { e.preventDefault(); setTab((t) => (t === 'ask' ? 'fix' : 'ask')); setTabTouched(true); }
                   if (e.key === 'Escape') { setInput(''); setInputMode('context'); (e.target as HTMLInputElement).blur(); }
                 }} aria-label="Add context or ask" />
               <CornerDownLeft size={12} className="absolute right-2.5 top-[9px] text-faint" />
@@ -254,6 +280,49 @@ export function Overlay() {
 function Action({ icon, label, onClick, disabled }: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean }) {
   return (
     <button className="btn btn-ghost h-[24px] px-2 text-[11.5px] gap-1 whitespace-nowrap" onClick={onClick} disabled={disabled}>{icon}{label}</button>
+  );
+}
+
+function RegisterNote() {
+  const r = useGlass((s) => s.registerCall);
+  const [, tick] = useState(0);
+  useEffect(() => { if (!r) return; const t = setTimeout(() => tick((x) => x + 1), 20000); return () => clearTimeout(t); }, [r?.t]);
+  if (!r || Date.now() / 1000 - r.t > 20) return null;
+  return (
+    <div className="mx-4 mb-1.5 chip chip-called h-auto py-1 whitespace-normal leading-snug" role="status">
+      The teacher is taking the register and called your name — say “here”.
+    </div>
+  );
+}
+
+function GlassAsks({ onError }: { onError: (e: Error) => void }) {
+  const asks = useGlass((s) => s.asks);
+  const subjectId = useGlass((s) => s.lesson.subject_id);
+  const [note, setNote] = useState('');
+  if (!asks.length && !note) return null;
+  const a = asks[asks.length - 1];
+  async function act(o: { action: string; value: string }) {
+    try {
+      if (o.action === 'subject') await cmd('session.subject', { subject_id: o.value });
+      if (o.action === 'add_text') { const msg = await addStudyText(o.value || subjectId); if (msg) setNote(msg); }
+      dismissAsk(a.id);
+    } catch (e) { onError(e as Error); }
+  }
+  return (
+    <div className="mx-3 mb-2 rounded-[9px] px-3 py-2 bg-[rgba(168,180,255,0.08)] shadow-[inset_0_0_0_1px_rgba(168,180,255,0.22)]">
+      {a ? (
+        <>
+          <div className="flex items-start gap-2">
+            <span className="eyebrow text-lumen mt-[1px]">GLASS asks</span>
+            <button className="ml-auto text-faint hover:text-muted text-[12px] leading-none" aria-label="Dismiss" onClick={() => dismissAsk(a.id)}>×</button>
+          </div>
+          <div className="text-[12.5px] mt-0.5 leading-snug">{a.question}</div>
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {a.options.map((o) => <button key={o.label} className="btn h-[24px] text-[11.5px]" onClick={() => act(o)}>{o.label}</button>)}
+          </div>
+        </>
+      ) : <div className="text-[12px] text-exact leading-snug">{note}</div>}
+    </div>
   );
 }
 

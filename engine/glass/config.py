@@ -138,6 +138,8 @@ DEFAULTS: dict[str, Any] = {
     "auto_subject": True,
     "subjects": SUBJECTS,
     "consent_acknowledged": False,
+    "answer_prefs": [],  # learned from the student's feedback, e.g. "keep answers short"
+    "ignore_questions": [],  # questions the student marked "not a real question"
 }
 
 

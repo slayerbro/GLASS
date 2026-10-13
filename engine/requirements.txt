@@ -29,3 +29,4 @@ winrt-Windows.Graphics.Imaging==3.2.1
 winrt-Windows.Media.Ocr==3.2.1
 winrt-Windows.Storage.Streams==3.2.1
 pytest==9.1.1
+pypdf==6.1.1                      # reading your books/notes (PDF)

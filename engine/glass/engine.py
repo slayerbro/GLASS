@@ -25,7 +25,9 @@ from .audio.vad import SileroVAD
 from .bus import bus
 from .config import DB_PATH, Settings
 from .db import DB
-from .detect import RHETORICAL_FOLLOW, NameDetector, classify_question, detect_task_cue
+from .detect import (RHETORICAL_FOLLOW, NameDetector, classify_question, compact_for_context, content_words,
+                     detect_task_cue, is_attendance)
+from .texts import QUOTE_REQUEST
 from .intel import LessonIntel, notes_markdown
 from .llm import VISION, OllamaClient, Scheduler
 from .mathsolve import MathService
@@ -50,6 +52,7 @@ class Engine:
         self.answers = AnswerEngine(self.llm, self.sched, self.math, self.mem, self.settings, self.db, bus.emit)
         self.intel = LessonIntel(self.llm, self.sched, self.mem, self.settings, self.db, bus.emit)
         self.intel.after_job = self.answers.warm_prefix
+        self.answers.on_answer = self.maybe_ask_for_book
         self.screen = ScreenService(self.settings, self._on_screen_obs, self._screen_status, self._on_vision_request)
         self.names = NameDetector(self.settings.get("student_name"), self.settings.get("name_aliases"))
         self.asr = ASRWorker(self._on_segment_thread, self._asr_status)
@@ -85,6 +88,8 @@ class Engine:
         self._finalising: set[asyncio.Task] = set()
         self._task_pending = False
         self._task_due = 0.0
+        self._register_until = 0.0
+        self._asked: set[str] = set()
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -197,6 +202,7 @@ class Engine:
         if not self.settings.get("consent_acknowledged"):
             raise PermissionError("Capture consent has not been confirmed in GLASS settings")
         self.mem.reset()
+        self._asked = set()
         self.answers.answers.clear()
         self.pending_q = None
         subj = self.settings.subject_by_id(subject_id) if subject_id else None
@@ -385,8 +391,13 @@ class Engine:
                     bus.emit("attention", **self.attention)
             return
         bus.emit("transcript.final", id=seg.id, source=seg.source, text=seg.text, t0=seg.t0, t1=seg.t1,
-                 latency_ms=round(seg.latency_ms))
-        u = Utterance(seg.id, seg.source, seg.text, seg.t0, seg.t1)
+                 latency_ms=round(seg.latency_ms),
+                 noise=not compact_for_context(seg.text) or (time.time() < self._register_until and len(seg.text.split()) <= 8))
+        # compaction: register / tech chatter / small talk never reaches the AI's context
+        in_register = time.time() < self._register_until or is_attendance(seg.text)
+        ctx = "" if in_register and len(seg.text.split()) <= 8 else compact_for_context(seg.text)
+        u = Utterance(seg.id, seg.source, seg.text, seg.t0, seg.t1, ctx)
+        self.mem.chars_since_state -= len(seg.text) - len(ctx)
         self.mem.add_utterance(u)
         if self.settings.get("store_transcript", True) is not False:
             self.db.add_segment(self.session["id"], seg.id, seg.source, seg.text, seg.t0, seg.t1)
@@ -409,7 +420,17 @@ class Engine:
 
         directed = bool(hit and hit.confidence >= 0.45)
         recent_q = self.mem.active_question and time.time() - self.mem.active_question["t"] < 120
-        if sig.is_question and not sig.check and not sig.rhetorical and sig.generic:
+        if sig.is_question and not sig.check and self._ignored(sig.text) and not directed:
+            log.info("ignored (student marked similar as not a question): %r", sig.text)
+        elif is_attendance(seg.text):
+            in_register = time.time() < self._register_until
+            self._register_until = time.time() + 90
+            if directed and (in_register or not recent_q):
+                # "Sanad?" during the register: answer "here", not a question
+                bus.emit("register", text=seg.text, t=time.time())
+            elif directed:
+                self._spawn(self._escalate_recent(hit, seg))
+        elif sig.is_question and not sig.check and not sig.rhetorical and sig.generic:
             # "Anyone?" / "What's the answer?" / "Where is it?": no lesson content of its own.
             # It can only be about the last real question — never start a new answer for it.
             if recent_q or directed:
@@ -433,8 +454,96 @@ class Engine:
         if self.mem.chars_since_state >= int(self.settings.profile().get("state_chars", 350)) \
                 or not self.mem.topic and len(self.mem.utterances) >= 2:
             self._spawn(self.intel.update_state())
+        self._maybe_ask_subject()
         if self.intel.notes_due():
             self._spawn(self.intel.update_notes())
+
+    # ------------------------------------------------------------------ learning from the student
+    def _ignored(self, text: str) -> bool:
+        """The student marked a similar question as "not a real question"."""
+        words = set(content_words(text, {self.settings.get("student_name", "").lower()}))
+        for entry in self.settings.get("ignore_questions") or []:
+            e = set(entry.split())
+            if e and words and len(e & words) / len(e | words) >= 0.75:
+                return True
+        return False
+
+    async def feedback(self, answer_id: str, rating: str, reason: str = "") -> dict | None:
+        ans = self.answers.answers.get(answer_id)
+        if not ans:
+            return None
+        self.db.add_feedback(answer_id, rating, reason, ans.get("resolved") or ans.get("question", ""),
+                             ans.get("say") or ans.get("body", ""))
+        ans["feedback"] = rating
+        self.answers._push(ans, force=True)
+        prefs = list(self.settings.get("answer_prefs") or [])
+
+        def add_pref(p: str) -> None:
+            if p not in prefs:
+                prefs.append(p)
+                self.settings.update({"answer_prefs": prefs[-6:]})
+
+        if reason == "not_question":
+            words = " ".join(sorted(set(content_words(ans.get("question", "")))))
+            if words:
+                ign = list(self.settings.get("ignore_questions") or [])
+                if words not in ign:
+                    self.settings.update({"ignore_questions": (ign + [words])[-200:]})
+            ans["rhetorical"] = True
+            self.answers._push(ans, force=True)
+            return {"hidden": True}
+        if reason == "too_long":
+            add_pref("keep the spoken answer under 15 words and the explanation to one or two sentences")
+            return {"id": (await self.answers._redo(ans, ["shorter"], ""))["id"]}
+        if reason == "too_simple":
+            add_pref("use precise exam-level terminology and a bit more depth")
+            return {"id": (await self.answers._redo(ans, ["detailed"], ""))["id"]}
+        if reason == "not_answer":
+            add_pref("always state the actual answer first; never just describe or restate the question")
+            return {"id": (await self.answers._redo(ans, ["answer"], ""))["id"]}
+        if reason == "wrong":
+            return {"id": (await self.answers._redo(ans, ["wrong"], ""))["id"]}
+        return {"ok": True}
+
+    def glass_ask(self, key: str, question: str, options: list[dict]) -> None:
+        """GLASS asks the student something (once per lesson per key)."""
+        if key in self._asked:
+            return
+        self._asked.add(key)
+        bus.emit("glass.ask", id=key, question=question, options=options, t=time.time())
+
+    def _maybe_ask_subject(self) -> None:
+        if self.session and not self.mem.subject_id and not self.mem.subject_locked and \
+                time.time() - self.session["started_at"] > 150 and len(self.mem.utterances) >= 6:
+            stats = sorted(self.db.subject_stats(), key=lambda r: -(r["lessons"] or 0))
+            ids = [r["subject_id"] for r in stats if r["subject_id"]][:3]
+            ids += [s["id"] for s in self.settings.get("subjects") if s["id"] not in ids][: 4 - len(ids)]
+            opts = [{"label": (self.settings.subject_by_id(i) or {}).get("name", i), "action": "subject", "value": i} for i in ids]
+            self.glass_ask("subject", "Which lesson is this? It helps me answer the right way.", opts)
+
+    def maybe_ask_for_book(self, ans: dict) -> None:
+        subj = self.mem.subject_id
+        if subj in ("english_lit", "english_lang") or QUOTE_REQUEST.search(ans.get("question", "")):
+            if not self.db.texts(subj) if subj else not self.db.texts():
+                name = (self.settings.subject_by_id(subj) or {}).get("name", "this subject")
+                self.glass_ask(f"book:{subj}", f"Add your copy of the book (PDF, EPUB, Word or text) so I can give real, "
+                                               f"checked quotes for {name}?",
+                               [{"label": "Add book", "action": "add_text", "value": subj or ""}])
+
+    async def add_text(self, path: str, subject_id: str | None, title: str = "") -> dict:
+        from pathlib import Path
+
+        from .texts import chunk_text, extract_text
+
+        p = Path(path)
+        raw = await asyncio.to_thread(extract_text, p)
+        chunks = await asyncio.to_thread(chunk_text, raw)
+        if len(chunks) < 2:
+            raise ValueError("Couldn't find readable text in that file.")
+        info = self.db.add_text(subject_id or self.mem.subject_id, title or p.stem.replace("_", " "), p.name, chunks)
+        self.answers.invalidate_texts()
+        bus.emit("texts.update", texts=self.db.texts())
+        return info
 
     async def _answer_question(self, sig, hit, seg) -> None:
         # register the pending question first so silence detection starts immediately

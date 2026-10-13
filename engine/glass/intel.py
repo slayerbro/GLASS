@@ -233,7 +233,7 @@ class LessonIntel:
 
     # -------------------------------------------------------------------- notes
     def notes_due(self) -> bool:
-        new_chars = sum(len(u.text) for u in self.mem.utterances[self.mem.notes_cursor:])
+        new_chars = sum(len(u.useful) for u in self.mem.utterances[self.mem.notes_cursor:])
         p = self.settings.profile()
         if p.get("notes_paused"):
             return False
@@ -254,7 +254,10 @@ class LessonIntel:
             # split very long backlogs so each call stays inside the context window
             text, end = "", start
             for u in chunk:
-                line = f"{'Student' if u.source == 'me' else 'Teacher'}: {u.text}\n"
+                if not u.useful:
+                    end += 1
+                    continue
+                line = f"{'Student' if u.source == 'me' else 'Teacher'}: {u.useful}\n"
                 if len(text) + len(line) > 7000:
                     break
                 text += line

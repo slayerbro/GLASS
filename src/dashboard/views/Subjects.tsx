@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Pin, PinOff } from 'lucide-react';
-import { cmd, fmtDate, useGlass } from '../../lib/engine';
+import { BookOpen, Pin, PinOff, Trash2 } from 'lucide-react';
+import { addStudyText, cmd, fmtDate, useGlass } from '../../lib/engine';
+import type { StudyText } from '../../lib/types';
 
 interface Stat { subject_id: string | null; lessons: number; last: number; topics: string | null }
 interface Formula { id: string; text: string; meaning: string; pinned: number }
@@ -47,9 +48,37 @@ function SubjectDetail({ id }: { id: string }) {
   };
   useEffect(load, [id]);
   const name = s.settings?.subjects.find((x) => x.id === id)?.name;
+  const [texts, setTexts] = useState<StudyText[]>([]);
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const loadTexts = () => cmd<StudyText[]>('texts.list', { subject_id: id }).then(setTexts).catch(() => {});
+  useEffect(() => { loadTexts(); setMsg(''); }, [id]);
   return (
     <div>
       <div className="h-title">{name}</div>
+      <div className="eyebrow mt-5 mb-1">Books & notes</div>
+      <div className="text-[12px] text-faint leading-snug mb-2">
+        Add your own copies of set texts, revision guides or class notes (PDF, EPUB, Word or text). GLASS answers from them and
+        only shows quotations it can find word-for-word in them. They stay on this computer.
+      </div>
+      <div className="space-y-1.5">
+        {texts.map((t) => (
+          <div key={t.id} className="panel px-3 py-2 flex items-center gap-2">
+            <BookOpen size={13} className="text-lumen flex-none" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] truncate">{t.title}</div>
+              <div className="text-[11px] text-faint">{t.filename} · {t.chunks} passages · added {fmtDate(t.added_at)}</div>
+            </div>
+            <button className="btn btn-ghost btn-icon btn-danger" title="Remove from GLASS (your file isn't touched)"
+              onClick={async () => { await cmd('texts.delete', { id: t.id }); loadTexts(); }}><Trash2 size={12} /></button>
+          </div>
+        ))}
+      </div>
+      <button className="btn btn-primary mt-2" disabled={busy}
+        onClick={async () => { setBusy(true); try { const m = await addStudyText(id); if (m) setMsg(m); loadTexts(); } catch (e) { setMsg((e as Error).message); } setBusy(false); }}>
+        <BookOpen size={13} />{busy ? 'Reading the file…' : 'Add book or notes'}
+      </button>
+      {msg && <div className="text-[12px] text-muted mt-1.5">{msg}</div>}
       <div className="eyebrow mt-5 mb-2">Formulas</div>
       {!formulas.length && <div className="text-[12.5px] text-faint">Formulas the teacher uses are collected here automatically.</div>}
       <div className="space-y-1.5">

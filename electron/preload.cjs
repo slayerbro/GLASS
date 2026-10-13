@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const SEND = new Set(['overlay:resize', 'overlay:focus', 'overlay:ignore-mouse', 'overlay:hide', 'dashboard:open',
   'snip:start', 'snip:cancel', 'snip:done', 'snip:vision', 'snip:frozen', 'app:quit']);
-const INVOKE = new Set(['engine:config', 'engine:log', 'engine:restart', 'engine:setup', 'ui:get', 'ui:set', 'export:markdown', 'export:pdf']);
+const INVOKE = new Set(['engine:config', 'engine:log', 'engine:restart', 'engine:setup', 'texts:pick', 'ui:get', 'ui:set', 'export:markdown', 'export:pdf']);
 const ON = new Set(['engine:state', 'shortcut', 'snip:rect', 'snip:vision', 'snip:freeze', 'snip:image', 'overlay:bounds', 'dashboard:view', 'ui:changed']);
 
 contextBridge.exposeInMainWorld('glass', {

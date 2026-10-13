@@ -65,6 +65,27 @@ export interface Answer {
   ocr?: string;
   qid?: string;
   subject_id?: string | null;
+  ask?: { q: string; options: string[] };
+  quotes?: { q: string; ok: boolean; source: string; texts: number }[];
+  feedback?: string;
+  instruction?: string;
+}
+
+export interface GlassAsk {
+  id: string;
+  question: string;
+  options: { label: string; action: 'subject' | 'add_text' | string; value: string }[];
+  t: number;
+}
+
+export interface StudyText {
+  id: string;
+  subject_id: string | null;
+  title: string;
+  filename: string;
+  chars: number;
+  chunks: number;
+  added_at: number;
 }
 
 export interface Task {
@@ -96,6 +117,7 @@ export interface Utter {
   t0: number;
   t1?: number;
   partial?: boolean;
+  noise?: boolean; // register / chatter: shown, but kept out of the AI's context
 }
 
 export interface Lesson {

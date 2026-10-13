@@ -51,6 +51,7 @@ class ThermalGuard:
         self.driver_errors = 0
         self._driver_fault_at = 0.0
         self._cpu_slow = 0
+        self._gpu_slow = 0
         self._init()
 
     def _init(self) -> None:
@@ -131,7 +132,11 @@ class ThermalGuard:
     def sample(self, cpu_load: float) -> dict:
         """Call every ~2 s (from a worker thread)."""
         now = time.time()
-        temp, gpu_thermal = self._gpu()
+        temp, gpu_flag = self._gpu()
+        # one stray "thermal slowdown" flag (e.g. while the GPU wakes from idle) is not heat:
+        # require it for 3 samples in a row and a GPU that is actually warm
+        self._gpu_slow = self._gpu_slow + 1 if gpu_flag and (temp is None or temp >= 70) else 0
+        gpu_thermal = self._gpu_slow >= 3
         perf = self._cpu_perf()
         mac_limit = self._mac_limit()
         new_err = self._new_driver_errors()

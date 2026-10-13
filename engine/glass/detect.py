@@ -157,6 +157,38 @@ LOGISTICS = re.compile(
     re.I,
 )
 
+# Taking the register: "Nicki?", "Is Nicki here?", "Where's Omar?", "Here, miss."
+# Whisper capitalises names, which separates "Is Nicki here?" from "Is oxygen present?".
+_NAME = r"(?P<name>[A-Z][a-z'\-]+(?: [A-Z][a-z'\-]+)?)"  # names stay case-sensitive
+_NAMED = [
+    re.compile(rf"^\W*(?i:(?:and|okay|ok|so|then|um|uh|next)[, ]+)?{_NAME}\W*$"),  # "Nicki?" / "And Omar?"
+    re.compile(rf"\b(?i:is|are) {_NAME} (?i:here|there|present|absent|online|with us|joining us|back|in class|in today|"
+               rf"coming|around|in)\b"),
+    re.compile(rf"\b(?i:where's|where is|where are) {_NAME}\W*$"),
+    re.compile(rf"\b(?i:has|have) (?i:anyone|anybody|someone) (?i:seen|heard from) {_NAME}"),
+]
+_UNNAMED = re.compile(r"\b(here|present),? (miss|sir|teacher|ma'?am)\b|^\W*(here|present|yes,? miss|yes,? sir)\W*$|"
+                      r"\b(the register|take attendance|roll call|who('s| is) (absent|missing|not here))\b", re.I)
+_NOT_NAMES = {"What", "Why", "How", "When", "Where", "Which", "Who", "Okay", "So", "Right", "Yes", "No", "Anyone",
+              "Anybody", "Everyone", "Good", "Thanks", "Thank", "Well", "Now", "And", "Then", "This", "That", "Is", "Are",
+              "Sorry", "Really", "Great", "Nice", "Correct", "Exactly", "Done", "Ready", "Next", "Wait", "Hello", "Hi",
+              "Seriously", "Understood", "Clear", "Agreed", "True", "False", "Same", "Again", "Louder"}
+
+
+def attendance_name(text: str) -> str | None:
+    """Name being called in the register / asked about ("Nicki?", "Is Nicki here?"), else None."""
+    for rx in _NAMED:
+        m = rx.search(text.strip())
+        if m and m.group("name").split()[0] not in _NOT_NAMES:
+            return m.group("name")
+    return None
+
+
+def is_attendance(text: str) -> bool:
+    """Taking the register / asking where a classmate is — never a lesson question."""
+    return bool(_UNNAMED.search(text.strip())) or attendance_name(text) is not None
+
+
 # words that carry no lesson content: a question made only of these ("where is it?",
 # "what's the answer?", "anyone?") can only be about something said or shown earlier
 _FILLER = set("""
@@ -279,7 +311,7 @@ def classify_question(text: str, next_text: str = "") -> QuestionSignal:
             continue
         if CHECK_PATTERNS.search(s):
             return QuestionSignal(True, "check", s, 0.8, check=True)
-        if LOGISTICS.search(s):
+        if LOGISTICS.search(s) or is_attendance(s):
             return QuestionSignal(True, "logistics", s, 0.8, check=True, logistics=True)
         if TASK_CUE.search(s) and not is_q_mark:
             continue  # instructions handled by the task detector
@@ -308,6 +340,39 @@ def extract_reference(s: str) -> dict:
     if m2:
         return {"ordinal": m2.group(1).lower()}
     return {}
+
+
+# ---------------------------------------------------------------------------- context compaction
+_SMALLTALK = re.compile(
+    r"^\W*(ok(ay)?|alright|all right|right|yes|yeah|yep|no|nope|good|great|perfect|nice|cool|thanks?( you)?|thank you( so much)?|"
+    r"sorry|hello|hi|hey|bye|goodbye|good (morning|afternoon)( everyone)?|um+|uh+|erm|hmm+|wait|one (second|sec|moment)|"
+    r"hold on|let me (see|check|share)|give me a (second|sec|moment)|can you (all )?hear me( now)?|"
+    r"(i'?m|we'?re) back|sorry about that|my (internet|connection|wifi) is.*|you'?re (on )?mute.*|"
+    r"(miss|sir),? (i|can i).*|(here|present)( miss| sir)?)\W*$",
+    re.I,
+)
+_FILLERS = re.compile(r"(?<![\w'])(um+|uh+|erm+|uhm+|hmm+|you know,?|i mean,?|kind of|sort of)(?![\w'])\s*,?\s*", re.I)
+_REPEAT = re.compile(r"\b(\w+)( \1\b)+", re.I)
+
+
+def is_noise_sentence(s: str) -> bool:
+    """Speech that adds nothing to the lesson context: the register, tech trouble,
+    classroom organisation, comprehension checks and content-free small talk."""
+    t = s.strip()
+    if not t:
+        return True
+    if _SMALLTALK.match(t) or is_attendance(t) or CHECK_PATTERNS.search(t) or LOGISTICS.search(t):
+        return True
+    return len(t.split()) <= 4 and not content_words(t)
+
+
+def compact_for_context(text: str) -> str:
+    """Drop noise sentences and verbal fillers; '' when nothing is left."""
+    kept = [s for s in split_sentences(text) if not is_noise_sentence(s)]
+    out = " ".join(kept)
+    out = _FILLERS.sub("", out)
+    out = _REPEAT.sub(r"\1", out)
+    return re.sub(r"\s+", " ", out).strip(" ,")
 
 
 def detect_task_cue(text: str) -> bool:

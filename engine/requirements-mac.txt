@@ -16,3 +16,4 @@ pytesseract==0.3.13          # optional maths double-check if Tesseract is insta
 pyobjc-framework-Quartz==12.2.2   # window list
 pyobjc-framework-Vision==12.2.2   # Apple Vision text recognition
 pytest==9.1.1
+pypdf==6.1.1                 # reading your books/notes (PDF)

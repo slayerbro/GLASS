@@ -4,6 +4,7 @@ are never stored here."""
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -36,6 +37,15 @@ CREATE TABLE IF NOT EXISTS flashcards(
   id TEXT PRIMARY KEY, session_id TEXT, subject_id TEXT, front TEXT, back TEXT, created_at REAL
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(session_id UNINDEXED, subject_id UNINDEXED, title, content);
+CREATE TABLE IF NOT EXISTS feedback(
+  id TEXT PRIMARY KEY, answer_id TEXT, rating TEXT, reason TEXT, question TEXT, answer TEXT, t REAL
+);
+CREATE TABLE IF NOT EXISTS texts(
+  id TEXT PRIMARY KEY, subject_id TEXT, title TEXT, filename TEXT, chars INTEGER, chunks INTEGER, added_at REAL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS text_chunks USING fts5(
+  text_id UNINDEXED, subject_id UNINDEXED, chapter UNINDEXED, content, tokenize='porter unicode61'
+);
 """
 
 
@@ -205,6 +215,53 @@ class DB:
         if subject_id:
             return self._all("SELECT * FROM flashcards WHERE subject_id=? ORDER BY created_at DESC", (subject_id,))
         return self._all("SELECT * FROM flashcards ORDER BY created_at DESC LIMIT 300")
+
+    def add_feedback(self, answer_id: str, rating: str, reason: str, question: str, answer: str) -> None:
+        self._exec("INSERT INTO feedback VALUES(?,?,?,?,?,?,?)",
+                   (new_id("fb_"), answer_id, rating, reason, question, answer, time.time()))
+
+    # -- study texts (the student's own copies of set texts / notes) -------------------
+    def add_text(self, subject_id: str | None, title: str, filename: str, chunks: list[tuple[str, str]]) -> dict:
+        tid = new_id("x_")
+        chars = sum(len(c) for _, c in chunks)
+        with self._lock:
+            self._conn.executemany("INSERT INTO text_chunks VALUES(?,?,?,?)",
+                                   [(tid, subject_id or "", ch, body) for ch, body in chunks])
+            self._conn.execute("INSERT INTO texts VALUES(?,?,?,?,?,?,?)",
+                               (tid, subject_id, title, filename, chars, len(chunks), time.time()))
+            self._conn.commit()
+        return {"id": tid, "subject_id": subject_id, "title": title, "filename": filename, "chars": chars, "chunks": len(chunks)}
+
+    def texts(self, subject_id: str | None = None) -> list[dict]:
+        if subject_id:
+            return self._all("SELECT * FROM texts WHERE subject_id=? ORDER BY added_at DESC", (subject_id,))
+        return self._all("SELECT * FROM texts ORDER BY added_at DESC")
+
+    def delete_text(self, tid: str) -> None:
+        self._exec("DELETE FROM text_chunks WHERE text_id=?", (tid,))
+        self._exec("DELETE FROM texts WHERE id=?", (tid,))
+
+    def text_full(self, tid: str) -> str:
+        rows = self._all("SELECT content FROM text_chunks WHERE text_id=?", (tid,))
+        return "\n".join(r["content"] for r in rows)
+
+    def search_texts(self, words: list[str], subject_id: str | None, limit: int = 4) -> list[dict]:
+        """BM25 over passages; same subject first (or all texts when the subject is unknown)."""
+        terms = [w for w in dict.fromkeys(words) if re.fullmatch(r"[\w']{2,}", w)][:14]
+        if not terms:
+            return []
+        q = " OR ".join('"' + t.replace('"', "") + '"' for t in terms)
+        sql = ("SELECT c.text_id, c.chapter, c.content, t.title, bm25(text_chunks) AS score FROM text_chunks c "
+               "JOIN texts t ON t.id = c.text_id WHERE text_chunks MATCH ?")
+        args: tuple = (q,)
+        if subject_id:
+            sql += " AND c.subject_id=?"
+            args += (subject_id,)
+        sql += " ORDER BY score LIMIT ?"
+        try:
+            return self._all(sql, args + (limit,))
+        except sqlite3.OperationalError:
+            return []
 
     def subject_stats(self) -> list[dict]:
         return self._all(

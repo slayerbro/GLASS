@@ -69,6 +69,16 @@ How the Mac version differs:
    - **Pill**: shrinks when nothing is happening. It can be click-through.
 5. Not sure what the teacher means? Press **Ctrl+Alt+Space** and type two or three words (`natural selection`, `question 4`, `the graph`). The answer is redone with that context.
 
+**The text box has two tabs** (press Tab to switch):
+- **Ask:** any new question about the lesson.
+- **Fix:** the answer on screen. Add context ("natural selection", "question 4") or tell it what to do: *answer it*, *shorter*, *simpler*, *more detail*, *quotes*, *that's wrong*.
+
+**Books and notes (Subjects → Books & notes):** add your own copy of a set text, revision guide or notes (PDF, EPUB, Word, text). GLASS answers from it and checks every quotation word-for-word against it. A ✓ means the quote was found in your book. Without the book, GLASS won't give quotes at all; it names the moment to quote instead.
+
+**GLASS asks you** when it's unsure (which lesson this is, what "that" means, whether to add the book), with one-tap answers. **👍 / 👎** teaches it: "Not a real question" ignores similar questions from then on, and "Too long" makes future answers shorter.
+
+**Off-topic speech is kept out:** the register, "can you hear me", tech trouble and small talk are greyed out in the transcript and never reach the AI.
+
 | Shortcut (changeable in Settings) | Action |
 |---|---|
 | Ctrl+Alt+G | Show / hide the overlay (expands the pill) |

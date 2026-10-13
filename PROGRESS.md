@@ -124,6 +124,22 @@ Tests:
 - real CPU latency (estimated 4–7 s per answer on the i9);
 - the vibrancy look.
 
+## 2026-10-13 — feedback round 2: smarter about what to answer and how
+
+- **Register / attendance** ("Nicki?", "Is Nicki here?", "Here, miss") is never answered. "Sanad?" during the register shows "say here".
+- **Context compaction:** the register, tech/logistics chatter, comprehension checks, small talk and verbal fillers are removed from everything the AI sees: answers, catch-up and notes.
+- **Ask | Fix tabs** in the overlay. Fix understands commands: *answer it*, *shorter*, *simpler*, *more detail*, *quotes*, *that's wrong*.
+- **"That's not an answer" guard:** if the spoken line only describes the question, GLASS regenerates once.
+- **Books & notes:** your own texts (PDF/EPUB/DOCX/TXT) are searched for every question (SQLite FTS5). Quotations are verified word-for-word; unverifiable ones are flagged; with no book, quotes are forbidden. Tested on a public-domain *A Christmas Carol* excerpt: real quotes ✓ verified, and the invented quote the model produced *before* this change is now prevented.
+- **GLASS asks you:**
+  - an `ASK:` line with options when unsure, falling back to the lesson's topics;
+  - "Which lesson is this?";
+  - "Add your copy of the book?".
+- **Feedback 👍/👎** with reasons that become lasting preferences or ignore-rules.
+- Heat guard: a single stray NVIDIA "thermal" flag is no longer treated as heat (it needs 3 samples and a warm GPU).
+
+Tests: 97/97 unit tests; harness scenarios incl. register, relevance, quotes (real model).
+
 ## Known limitations (honest)
 
 - **Real classroom audio not tested.** All speech tests used Windows SAPI voices. Real teachers (accents, crosstalk, poor microphones, Meet compression) will reduce accuracy. Add name spellings in Settings → Student if GLASS mishears "Sanad".

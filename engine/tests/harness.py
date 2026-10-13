@@ -405,10 +405,24 @@ async def sc_relevance(engine: Engine) -> Result:
     return r
 
 
+async def sc_register(engine: Engine) -> Result:
+    r = Result("Register: no answers, 'say here' for Sanad, kept out of context")
+    await new_session(engine, "english_lit")
+    t0 = time.time()
+    await feed(engine, load_wav(AUDIO / "register.wav"))
+    await asyncio.sleep(3)
+    shown = [a for a in answers_since(t0).values() if a["status"] != "superseded" and not a.get("rhetorical")]
+    finals = [e["text"] for e in EVENTS if e["type"] == "transcript.final" and e["ts"] >= t0]
+    r.check("no answer cards", not shown, f"{[a['question'] for a in shown]} | heard: {finals}")
+    r.check("Sanad told to answer the register", any(e["type"] == "register" for e in EVENTS if e["ts"] >= t0))
+    r.check("nothing from the register in the AI context", engine.mem.recent(300) == "", repr(engine.mem.recent(300)))
+    return r
+
+
 SCENARIOS = {
     "direct_name": sc_direct_name, "general": sc_general, "rhetorical": sc_rhetorical,
     "screen_question": sc_screen_question, "equation_spoken": sc_equation_spoken, "written_equation": sc_written_equation,
-    "tasks": sc_tasks, "vague": sc_vague_then_context, "notes": sc_notes_catchup, "silence": sc_silence, "blurry": sc_blurry, "snip": sc_snip, "relevance": sc_relevance,
+    "tasks": sc_tasks, "vague": sc_vague_then_context, "notes": sc_notes_catchup, "silence": sc_silence, "blurry": sc_blurry, "snip": sc_snip, "relevance": sc_relevance, "register": sc_register,
 }
 
 

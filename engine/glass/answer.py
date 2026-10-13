@@ -23,13 +23,62 @@ from rapidfuzz import fuzz
 
 from . import prompts as P
 from .detect import NameHit, QuestionSignal, content_words, extract_reference, question_kind
+from .texts import QUOTE_REQUEST, find_quotes, normalise as norm_text, quote_in
 from .llm import ANSWER, DIRECT, REVISION, TASK, VISION, LLMError, OllamaClient, Scheduler, reraise_if_cancelled
 from .mathsolve import MathService, find_problems
 from .memory import LessonMemory
 
 log = logging.getLogger("glass.answer")
 
-FIELD_RE = re.compile(r"^\s*(Q|TYPE|CONF|UNSURE|CALC|RESULT|SAY|WHY)\s*:\s*(.*)$")
+# What the student types into the context box can be an instruction, not context.
+COMMANDS = [
+    ("answer", re.compile(r"\b(just |pls |please )?(answer|solve)( it| this| that| the (question|q))?\b|give (me )?(the |an |a )?"
+                          r"(answer|straight answer)|what('s| is) the answer|tell me the answer|actual answer|not explain", re.I)),
+    ("shorter", re.compile(r"\b(shorter|short|briefly|brief|one line|one sentence|tl;?dr|summari[sz]e|less)\b", re.I)),
+    ("simpler", re.compile(r"\b(simpler|simple|easier|eli5|plain english|don'?t understand|confus)", re.I)),
+    ("detailed", re.compile(r"\b(more detail|detailed|longer|elaborate|expand|explain more|in depth|full answer)\b", re.I)),
+    ("quotes", re.compile(r"\b(quotes?|quotations?|evidence|textual)\b", re.I)),
+    ("example", re.compile(r"\b(an example|examples?|for instance)\b", re.I)),
+    ("wrong", re.compile(r"\b(wrong|incorrect|not right|that'?s not it|no that'?s|mistake)\b", re.I)),
+]
+COMMAND_TEXT = {
+    "answer": "Give THE ANSWER itself in SAY — state it directly. Do not restate, describe or explain the question.",
+    "shorter": "Make SAY at most 15 words and WHY one short sentence.",
+    "simpler": "Use simpler words a younger student would understand.",
+    "quotes": "Give 1-3 short exact quotations as evidence (copied word-for-word from the provided text passages), "
+              "each followed by a few words on what it shows.",
+    "example": "Include one concrete, specific example in SAY.",
+    "wrong": "The student says your previous answer was wrong. Re-read the question and context, consider a different "
+             "interpretation or fix the error, and give a corrected answer.",
+}
+_FILLER_WORDS = re.compile(r"\b(it|this|that|the|question|q|please|pls|just|me|give|a|an|answer|solve|now|again|can|you|"
+                           r"make|be|more|less|and|then|so|ok|okay|no|not|that's|its|it's)\b", re.I)
+
+# a "spoken answer" that only describes the question is not an answer
+META_SAY = re.compile(r"^\s*(the (teacher|question) (is )?(ask|want)|this question|the question (is|asks|wants)|to answer (this|the)|"
+                      r"you (need|have|should) to|it('s| is) asking|they('re| are) asking|i (need|would need|can'?t)|"
+                      r"let me|we need to|in order to answer|the answer (depends|would depend))", re.I)
+
+
+def parse_commands(text: str) -> tuple[list[str], str]:
+    """-> (commands, leftover context). "answer it, it's about natural selection" ->
+    (["answer"], "it's about natural selection")."""
+    cmds = [name for name, rx in COMMANDS if rx.search(text)]
+    if not cmds:
+        return [], text
+    rest = text
+    for _, rx in COMMANDS:
+        rest = rx.sub(" ", rest)
+    rest = re.sub(r"\s+", " ", _FILLER_WORDS.sub(" ", rest)).strip(" ,.;:-")
+    leftover = text if len(rest.split()) >= 2 else ""
+    if cmds and leftover:
+        # keep the context part only (drop the command phrase itself)
+        leftover = re.sub(r"^.*?(about|it'?s|its|is|on|regarding|means?|refers to)\s+", "", text, flags=re.I) if re.search(
+            r"\b(about|it'?s|is|on|regarding|refers to)\b", text, re.I) else text
+    return cmds, leftover
+
+
+FIELD_RE = re.compile(r"^\s*(Q|TYPE|CONF|UNSURE|ASK|CALC|RESULT|SAY|WHY)\s*:\s*(.*)$")
 NULLISH = {"", "-", "->", "none", "n/a", "null", "nothing", "no"}
 
 
@@ -54,6 +103,8 @@ class AnswerEngine:
         self.num_ctx = 8192
         self._last_emit: dict[str, float] = {}
         self.last_llm_use = time.time()
+        self._corpus: dict[str, list[tuple[str, str]]] = {}  # subject -> [(title, normalised text)]
+        self.on_answer = None  # engine hook after each finished answer
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -109,6 +160,11 @@ class AnswerEngine:
         past = self._retrieve(question + " " + " ".join(extra))
         if past:
             parts.append("FROM EARLIER LESSONS (same subject; lower priority than this lesson):\n" + past)
+        passages = self._text_passages(question + " " + " ".join(extra), wants_quotes=bool(
+            QUOTE_REQUEST.search(question + " " + " ".join(extra))), budget=int(max_chars * 0.6))
+        if passages:
+            parts.append(passages)
+            ans["sources"].append("your texts")
         screen = self.mem.screen_context(max_chars=int(max_chars * 0.45))
         if screen:
             parts.append("SCREEN TEXT (OCR of the shared screen; may contain recognition errors):\n" + screen)
@@ -123,10 +179,70 @@ class AnswerEngine:
         if recent:
             parts.append("RECENT SPEECH (oldest first, automatic transcription):\n" + recent)
             ans["sources"].append("transcript")
+        prefs = self.settings.get("answer_prefs") or []
+        if prefs and for_answer:
+            parts.append(f"{self.name.upper()}'S PREFERENCES (learned from feedback): " + "; ".join(prefs))
         if extra:
             parts.append(f"{self.name.upper()}'S EXTRA CONTEXT FOR THIS QUESTION (authoritative — use it to interpret the "
                          f"question; it may also correct your previous interpretation): " + " | ".join(f'"{e}"' for e in extra))
         return "\n\n".join(parts)
+
+    # ---------------------------------------------------------------- study texts
+    def invalidate_texts(self) -> None:
+        self._corpus.clear()
+
+    def _text_passages(self, query: str, wants_quotes: bool, budget: int) -> str:
+        """Most relevant passages from the student's own copies of set texts."""
+        if not self.db:
+            return ""
+        topic = f"{self.mem.topic} {self.mem.subtopic}"
+        words = content_words(query) + content_words(topic)
+        if not words:
+            return ""
+        subj = self.mem.subject_id if self.mem.subject_id and self.db.texts(self.mem.subject_id) else None
+        hits = self.db.search_texts(words, subj, limit=6 if wants_quotes else 3)
+        if not hits:
+            return ""
+        out, used = [], 0
+        for h in hits:
+            body = h["content"]
+            if used + len(body) > budget and out:
+                break
+            where = f"{h['title']}" + (f", {h['chapter']}" if h["chapter"] else "")
+            out.append(f"[{where}]\n{body}")
+            used += len(body)
+        return ("PASSAGES FROM THE STUDENT'S OWN COPY OF THE TEXT (exact wording — quotations may ONLY be copied from "
+                "here or from the screen):\n" + "\n---\n".join(out))
+
+    def _corpus_for(self, subject_id: str | None) -> list[tuple[str, str]]:
+        key = subject_id or "*"
+        if key not in self._corpus and self.db:
+            rows = self.db.texts(subject_id) if subject_id else self.db.texts()
+            if subject_id and not rows:
+                rows = self.db.texts()
+            self._corpus[key] = [(r["title"], norm_text(self.db.text_full(r["id"]))) for r in rows]
+        return self._corpus.get(key, [])
+
+    def check_quotes(self, ans: dict) -> None:
+        """Verify every quotation in an answer word-for-word against the student's texts
+        and what was on screen. Unverifiable quotes are flagged, never shown as fact."""
+        blob = " ".join(ans.get(k) or "" for k in ("say", "why", "body", "detailed"))
+        quotes = find_quotes(blob)
+        if not quotes:
+            ans["quotes"] = []
+            return
+        corpus = self._corpus_for(self.mem.subject_id)
+        screen = norm_text(" ".join(o.text for o in self.mem.screen)) if self.mem.screen else ""
+        speech = norm_text(" ".join(u.text for u in self.mem.utterances[-60:]))
+        out = []
+        for q in quotes[:6]:
+            src = next((title for title, text in corpus if quote_in(q, text)), None)
+            if not src and screen and quote_in(q, screen):
+                src = "the screen"
+            if not src and speech and quote_in(q, speech):
+                src = "what the teacher said"
+            out.append({"q": q, "ok": bool(src), "source": src or "", "texts": len(corpus)})
+        ans["quotes"] = out
 
     def _retrieve(self, query: str) -> str:
         if not self.db or not self.mem.subject_id:
@@ -193,14 +309,25 @@ class AnswerEngine:
         return ca == cb or (len(ca & cb) / len(ca | cb) >= 0.8 and fuzz.token_sort_ratio(a, b) >= 85)
 
     async def clarify(self, text: str) -> dict:
-        """Instant context: the student typed a few words. Re-answer the active
-        question with them, or treat them as a request if nothing is active."""
+        """Instant context: the student typed a few words. They are either context for the
+        active question ("natural selection", "question 4") or an instruction about the
+        answer ("answer it", "shorter", "give quotes", "that's wrong") — or both."""
         text = text.strip()
+        cmds, context = parse_commands(text)
         active = self.mem.active_question
+        last = self._last_answer()
+        if not active or time.time() - active["t"] >= 300:
+            if cmds and last and time.time() - last["t"] < 300:
+                return await self._redo(last, cmds, context)
+            return await self.ask(text)
+        old = self.answers.get(active.get("answer_id", ""))
+        if cmds == ["detailed"] and not context and old:
+            return await self.expand(old["id"])
+        if cmds:
+            return await self._redo(old or last, cmds, context, active=active)
         if active and time.time() - active["t"] < 300:
             ctx = self.mem.clarifications.setdefault(active["id"], [])
             ctx.append(text)
-            old = self.answers.get(active.get("answer_id", ""))
             ans = self._new("question", question=active["text"], kind=active.get("kind", ""), qid=active["id"],
                             directed=old["directed"] if old else None, clarifications=list(ctx),
                             replaces=old["id"] if old else None)
@@ -214,6 +341,38 @@ class AnswerEngine:
             await self._run_answer(ans, active["text"], ref, DIRECT, extra=list(ctx))
             return ans
         return await self.ask(text)
+
+    def _last_answer(self) -> dict | None:
+        for a in reversed(list(self.answers.values())):
+            if a["status"] == "done" and a["mode"] in ("question", "ask", "snip", "tutor", "explain"):
+                return a
+        return None
+
+    async def _redo(self, old: dict | None, cmds: list[str], context: str, active: dict | None = None) -> dict:
+        """Re-answer following the student's instruction, keeping the same question."""
+        if old is None:
+            return await self.ask(context or " ".join(cmds))
+        question = old.get("question") or (active or {}).get("text", "")
+        instructions = [COMMAND_TEXT[c] for c in cmds if c in COMMAND_TEXT]
+        if "detailed" in cmds:
+            instructions.append("Give a fuller explanation in WHY (4-5 sentences).")
+        if old.get("say") or old.get("body"):
+            instructions.append(f'Your previous reply was: "{(old.get("say") or old.get("body") or "")[:400]}"')
+        extra = list(old.get("clarifications") or [])
+        if context:
+            extra.append(context)
+            if active:
+                self.mem.clarifications.setdefault(active["id"], []).append(context)
+        mode = "question" if old["mode"] == "question" else "ask"
+        ans = self._new(mode, question=question, kind=old.get("kind", ""), qid=old.get("qid"),
+                        directed=old.get("directed"), clarifications=extra, replaces=old["id"],
+                        instruction=", ".join(cmds))
+        if active:
+            active["answer_id"] = ans["id"]
+        self._push(ans, force=True)
+        ref = {"question_number": active["ref_n"]} if active and active.get("ref_n") else extract_reference(question)
+        await self._run_answer(ans, question, ref, DIRECT, extra=extra, instructions=instructions)
+        return ans
 
     async def ask(self, text: str) -> dict:
         """Free request typed by the student (topic, question, formula, attempt)."""
@@ -232,7 +391,8 @@ class AnswerEngine:
         await self._run_answer(ans, text, extract_reference(text), DIRECT, extra=extra)
         return ans
 
-    async def _run_answer(self, ans: dict, question: str, ref: dict, prio: int, extra: list[str]) -> None:
+    async def _run_answer(self, ans: dict, question: str, ref: dict, prio: int, extra: list[str],
+                          instructions: list[str] | None = None) -> None:
         t0 = time.perf_counter()
         profile = self.settings.profile()
         ref_text = self.mem.resolve_reference(ref) if ref else None
@@ -266,6 +426,16 @@ class AnswerEngine:
         else:
             qline = f"{self.name.upper()} ASKS: {question}"
         system = P.SYSTEM_ANSWER.format(name=self.name, guide=P.guide(self.mem.subject_id, calc=True), format=P.FORMAT_RULES)
+        instructions = list(instructions or [])
+        if QUOTE_REQUEST.search(question + " " + " ".join(extra) + " " + " ".join(instructions)) \
+                and "your texts" not in ans["sources"]:
+            # no copy of the text: a small model WILL invent plausible-sounding quotes, so forbid them outright
+            instructions = [i for i in instructions if not i.startswith("Give 1-3 short exact quotations")]
+            instructions.append("There is NO copy of this text available, so write NO quotation marks and NO quoted wording. "
+                                "SAY must instead name the best moment to quote, e.g. 'Use the part in chapter five where …, "
+                                "because it shows …' (never ask for the passage). Set UNSURE: add the book to GLASS for exact quotes.")
+        if instructions:
+            qline += f"\n\nINSTRUCTIONS FROM {self.name.upper()} (follow them):\n- " + "\n- ".join(instructions)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": context + "\n\n" + qline}]
 
         t_sub = time.perf_counter()
@@ -294,6 +464,22 @@ class AnswerEngine:
             ans["error"] = f"{type(e).__name__}: {e}"
             self._push(ans, force=True)
             return
+        # a "spoken answer" that only describes the question: ask once more for the answer itself
+        if META_SAY.search(ans["say"] or "") and ans["kind"] not in ("none", "opinion") and not ans.get("_retried"):
+            ans["_retried"] = True
+            log.info("SAY described the question instead of answering; retrying: %r", ans["say"][:80])
+            retry = messages[:1] + [{"role": "user", "content": messages[1]["content"] + "\n\nIMPORTANT: your last attempt "
+                                     f'("{ans["say"][:200]}") described the question instead of answering it. SAY must be the answer itself.'}]
+            for k in ("say", "why"):
+                ans[k] = ""
+
+            async def job2():
+                await self._stream_answer(ans, retry, t0)
+
+            try:
+                await self.sched.submit(DIRECT, job2, key=f"answer:{ans.get('qid') or ans['id']}:retry")
+            except (asyncio.CancelledError, Exception):
+                reraise_if_cancelled()
         self._finish(ans)
         if profile.get("verify_answers") and not ans["verified"] and ans["kind"] in ("calculation", "explanation", "comparison") \
                 and ans["conf"] != "low" and ans["say"]:
@@ -365,6 +551,10 @@ class AnswerEngine:
             u = get("UNSURE")
             if u.lower().strip(" .") not in NULLISH:
                 ans["unsure"] = u
+        if "ASK" in fields:
+            parts = [p.strip(" \"'") for p in get("ASK").split("|")]
+            if parts and parts[0] and parts[0].lower().strip(" .") not in NULLISH and len(parts) >= 2:
+                ans["ask"] = {"q": parts[0], "options": [p for p in parts[1:4] if p]}
         if "CALC" in fields and not ans["verified"]:
             c = get("CALC")
             if c.lower().strip(" .") not in NULLISH:
@@ -382,12 +572,22 @@ class AnswerEngine:
         self.last_llm_use = time.time()
         # TYPE none = "not a question needing an answer" — but never hide it when the
         # student was addressed or when the model is unsure what was meant
-        if ans["kind"] == "none" and ans["mode"] == "question" and not ans["directed"] \
-                and ans["conf"] != "low" and not ans["unsure"]:
-            ans["rhetorical"] = True
+        if ans["kind"] == "none" and ans["mode"] == "question" and not ans["directed"]:
+            ans["rhetorical"] = True  # not a lesson question (attendance, logistics...): keep it off the overlay
+        self.check_quotes(ans)
         if not ans["conf"]:
             ans["conf"] = "medium"
+        if ans["conf"] == "low" and not ans.get("ask") and ans["mode"] == "question":
+            # the model didn't suggest options: offer what this lesson has been about
+            opts = [o for o in dict.fromkeys([self.mem.subtopic, self.mem.topic, *list(self.mem.key_terms)[-3:]]) if o][:3]
+            if opts:
+                ans["ask"] = {"q": "Not sure what the teacher means — is it about:", "options": opts}
         self._push(ans, force=True)
+        if self.on_answer:
+            try:
+                self.on_answer(ans)
+            except Exception:
+                log.debug("on_answer hook failed", exc_info=True)
         if ans["mode"] == "question" and self.mem.active_question and ans.get("qid") == self.mem.active_question["id"]:
             self.mem.add_question({"id": ans["qid"], "t": ans["t"], "text": ans["question"], "resolved": ans["resolved"],
                                    "kind": ans["kind"], "say": ans["say"], "directed": bool(ans["directed"])})
@@ -455,6 +655,7 @@ class AnswerEngine:
         try:
             await self.sched.submit(prio, job, key=f"{ans['mode']}:{ans['id']}")
             ans["status"] = "done"
+            self.check_quotes(ans)
         except asyncio.CancelledError:
             ans["status"] = "superseded"
             self._push(ans, force=True)

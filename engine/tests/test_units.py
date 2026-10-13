@@ -1,6 +1,8 @@
 """Fast deterministic tests (no GPU / LLM needed):  pytest -q tests/test_units.py"""
 from __future__ import annotations
 
+from pathlib import Path
+
 import asyncio
 
 import pytest
@@ -344,3 +346,105 @@ def test_similar_but_different_questions_are_not_repeats():
     assert not a._same_question("What does ROM stand for?", "What does RAM stand for?")
     assert a._same_question("Sanad, what does RAM stand for?", "What does RAM stand for?")
     assert a._same_question("So what does RAM stand for?", "what does RAM stand for")
+
+
+# ---------------------------------------------------------------- study texts & quote verification
+FIX_TEXT = Path(__file__).parent / "fixtures" / "texts" / "christmas_carol_stave1.txt"
+
+
+def test_quotes_found_and_verified():
+    from glass.texts import find_quotes, normalise, quote_in
+
+    corpus = normalise(FIX_TEXT.read_text(encoding="utf-8"))
+    assert find_quotes("I don’t know, it isn’t clear.") == []  # apostrophes are not quotes
+    qs = find_quotes('He is "Hard and sharp as flint" and “solitary as an oyster”.')
+    assert qs == ["Hard and sharp as flint", "solitary as an oyster"]
+    assert all(quote_in(q, corpus) for q in qs)
+    assert quote_in("Hard and sharp as flint... solitary as an oyster", corpus)  # elision
+    assert not quote_in("I have no use for such people as you", corpus)  # invented
+
+
+def test_text_library_search(tmp_path):
+    from glass.db import DB
+    from glass.texts import chunk_text, extract_text
+
+    db = DB(tmp_path / "t.db")
+    chunks = chunk_text(extract_text(FIX_TEXT))
+    assert chunks and chunks[0][0].startswith("STAVE I")
+    db.add_text("english_lit", "A Christmas Carol", FIX_TEXT.name, chunks)
+    hits = db.search_texts(["scrooge", "cold", "mean"], "english_lit")
+    assert hits and "Scrooge" in hits[0]["content"] and hits[0]["title"] == "A Christmas Carol"
+    assert db.search_texts(["scrooge"], "biology") == []
+
+
+def test_docx_extraction(tmp_path):
+    import zipfile
+
+    from glass.texts import extract_text
+
+    p = tmp_path / "notes.docx"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>Sampath climbs the guava tree.</w:t></w:r></w:p>"
+                                        "<w:p><w:r><w:t>The monkeys arrive.</w:t></w:r></w:p></w:body></w:document>")
+    assert "Sampath climbs the guava tree." in extract_text(p) and "monkeys" in extract_text(p)
+
+
+# ---------------------------------------------------------------- register, compaction, commands
+@_pytest.mark.parametrize("text", ["Nicki?", "Is Nicki here?", "And Omar?", "Where is Omar?", "Here, miss.",
+                                   "Has anyone seen Ali?", "Okay, let me do the register."])
+def test_register_is_attendance(text):
+    from glass.detect import is_attendance
+
+    assert is_attendance(text)
+
+
+@_pytest.mark.parametrize("text", ["Is oxygen present in the reaction?", "Who is Sampath?", "Where is the CPU located?",
+                                   "Is Sampath happy in the orchard?", "Correct?"])
+def test_lesson_talk_is_not_attendance(text):
+    from glass.detect import is_attendance
+
+    assert not is_attendance(text)
+
+
+def test_compaction_removes_chatter_keeps_lesson():
+    from glass.detect import compact_for_context as c
+
+    assert c("Nicki? Is Nicki here?") == ""
+    assert c("Sorry, my internet is lagging.") == ""
+    out = c("Okay. Can everyone see my screen? Right, so um today we are looking at, you know, the the guava orchard.")
+    assert "screen" not in out and " um " not in out and "the the" not in out and "guava orchard" in out
+    assert c("What does RAM stand for?") == "What does RAM stand for?"
+
+
+@_pytest.mark.parametrize("text,cmds,ctx", [
+    ("answer the question", ["answer"], ""), ("just answer it", ["answer"], ""), ("shorter", ["shorter"], ""),
+    ("give quotes", ["quotes"], ""), ("natural selection", [], "natural selection"), ("question 4", [], "question 4"),
+    ("thats wrong, its question 4", ["wrong"], "question 4"),
+])
+def test_context_box_commands(text, cmds, ctx):
+    from glass.answer import parse_commands
+
+    got_cmds, got_ctx = parse_commands(text)
+    assert got_cmds == cmds and got_ctx == ctx
+
+
+def test_meta_answers_are_caught():
+    from glass.answer import META_SAY
+
+    assert META_SAY.search("The question is asking about how Sampath feels.")
+    assert META_SAY.search("To answer this, you need to look at chapter five.")
+    assert not META_SAY.search("Sampath feels free because nobody controls him in the tree.")
+
+
+def test_thermal_ignores_stray_gpu_flag(monkeypatch):
+    from glass import thermal
+
+    g = thermal.ThermalGuard(lambda *a: None)
+    seq = iter([(51, True), (50, False), (51, True)])
+    monkeypatch.setattr(g, "_gpu", lambda: next(seq))
+    monkeypatch.setattr(g, "_new_driver_errors", lambda: 0)
+    monkeypatch.setattr(g, "_cpu_perf", lambda: 100.0)
+    monkeypatch.setattr(g, "_mac_limit", lambda: None)
+    for _ in range(3):
+        g.sample(10)
+    assert g.level == "ok"

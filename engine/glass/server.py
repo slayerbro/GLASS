@@ -140,6 +140,19 @@ class Server:
         if cmd == "vision.prepare":
             asyncio.create_task(a.prepare_vision())
             return True
+        if cmd == "feedback":
+            return await e.feedback(m["id"], m.get("rating", "down"), m.get("reason", ""))
+        if cmd == "texts.add":
+            return await e.add_text(m["path"], m.get("subject_id") or None, m.get("title", ""))
+        if cmd == "texts.list":
+            return e.db.texts(m.get("subject_id"))
+        if cmd == "texts.delete":
+            e.db.delete_text(m["id"])
+            e.answers.invalidate_texts()
+            return True
+        if cmd == "prefs.clear":
+            e.settings.update({"answer_prefs": [], "ignore_questions": []})
+            return True
         if cmd == "dismiss":
             e.pending_q = None
             e._set_mode("passive" if e.session else "idle")

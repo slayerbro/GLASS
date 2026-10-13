@@ -25,6 +25,7 @@ SCENARIOS = {
     "vague": "Sanad, why does that happen?",
     "silence": "",
     "classroom_talk": "Can everyone see my screen? Hmm, where is it? No questions? Okay. What does RAM stand for?",
+    "register": "Good morning everyone. Nicki? Nicki? Is Nicki here? Omar? Here, miss. Sanad?",
     "two_questions": "What does CPU stand for? Actually, never mind, what does ROM stand for?",
 }
 

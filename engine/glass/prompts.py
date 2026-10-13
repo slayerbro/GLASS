@@ -27,13 +27,14 @@ SUBJECT_GUIDES: dict[str, str] = {
         "like 'stuff' or 'it makes energy'."
     ),
     "english_lang": (
-        "English Language (Cambridge IGCSE). Answer with technique + evidence + effect on the reader. Only quote words "
-        "that appear in the lesson context below; NEVER invent quotations. Keep spoken answers natural, not essay-like."
+        "English Language (Cambridge IGCSE). Answer with technique + evidence + effect on the reader. Quote only words "
+        "from the provided passages, screen or speech; NEVER invent quotations. Keep spoken answers natural, not essay-like."
     ),
     "english_lit": (
         "English Literature (Cambridge IGCSE). Point + embedded evidence + analysis of language/structure + context or "
-        "writer's intention. Only quote text present in the lesson context; if no quotation is available, paraphrase and "
-        "say so. NEVER invent quotations, characters or events."
+        "writer's intention. When asked for quotes, give the quotations themselves (copied from the provided passages of "
+        "the student's copy of the text), each with what it shows — don't just discuss the question. NEVER invent "
+        "quotations, characters or events."
     ),
     "business": (
         "Business Studies (IGCSE). Define the term, apply it to the case/business being discussed, develop a chain of "
@@ -63,6 +64,7 @@ Q: <the teacher's question, copied — only replace words like "it/that/question
 TYPE: <calculation|definition|acronym|explanation|example|comparison|opinion|recall|none>
 CONF: <high|medium|low>  (low if you cannot tell what is being asked or what "this/that/question 3" refers to)
 UNSURE: <one short phrase naming what is unclear or what you assumed, or ->
+ASK: <only when CONF is low: one short question to the student plus 2-3 likely answers, as "question | option | option | option"; otherwise ->
 CALC: <only for calculations: ONE SymPy expression or equation to evaluate, e.g. 2*x+7=19 or 0.5*1200*3^2 or sind(30)*12>
 SAY: <ONE short natural sentence the student could say out loud — it must directly answer Q>
 WHY: <2-3 short sentences explaining it, as a strong Year 11 student would>"""
@@ -78,7 +80,8 @@ Rules:
 - Use the lesson context: the teacher's own words and on-screen text outrank your general knowledge. If the teacher defined something a particular way, use their wording.
 - Never invent quotations, data, page contents or what the teacher said. If the question refers to something you cannot see ("that", "question 3", "the graph") and it is not in the context, set CONF: low and say what is missing in UNSURE — still give your best answer if a sensible one exists, stating the assumption.
 - If there is no sensible guess, SAY must be a short, polite clarifying question the student can ask the teacher (e.g. "Sorry, do you mean why the population changes?"), never "I don't know".
-- If the latest speech is not really a question that needs an answer from a student (rhetorical, a comprehension check, an instruction), set TYPE: none and keep SAY short.
+- If the latest speech is not really a lesson question for a student (rhetorical, a comprehension check, an instruction, the register/attendance, where someone is, technology or classroom organisation), set TYPE: none and keep SAY short.
+- Quotations: copy them word-for-word ONLY from the PASSAGES of the student's own text, the screen or the teacher's speech; they are checked automatically and invented ones are flagged. If quotations are asked for but no passages are provided, don't make up wording — name the exact moment (who, what happens, roughly where in the book) and set UNSURE: "add the book to GLASS for exact quotes".
 - For calculations, write the CALC line; the result is computed exactly and given back to you as RESULT. Use it — do not do arithmetic yourself.
 - For opinion questions, give one clear, defensible view with a reason.
 
@@ -91,6 +94,7 @@ Q: What does CPU stand for?
 TYPE: acronym
 CONF: high
 UNSURE: -
+ASK: -
 CALC: -
 SAY: CPU stands for Central Processing Unit.
 WHY: It's the part of the computer that fetches, decodes and executes program instructions.
@@ -100,6 +104,7 @@ Q: Why do we need a catalyst in the Haber process?
 TYPE: explanation
 CONF: high
 UNSURE: -
+ASK: -
 CALC: -
 SAY: The iron catalyst speeds up the reaction so we get ammonia faster without needing an even higher temperature.
 WHY: A catalyst gives an alternative pathway with a lower activation energy. That makes the reaction economical at about 450 °C, which is a compromise between rate and yield."""
