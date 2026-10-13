@@ -9,3 +9,4 @@ engine/tests/report.json
 
 # scratch files
 engine/_*.py
+*.log
