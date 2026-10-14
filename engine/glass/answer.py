@@ -25,7 +25,8 @@ from . import prompts as P
 from .detect import NameHit, QuestionSignal, content_words, extract_reference, question_kind
 from .texts import QUOTE_REQUEST, find_quotes, normalise as norm_text, quote_in
 from .llm import ANSWER, DIRECT, REVISION, TASK, VISION, LLMError, OllamaClient, Scheduler, reraise_if_cancelled
-from .mathsolve import MathService, find_problems, flat_powers, normalise as norm_math, plan_math, tidy_result
+from .mathsolve import (MathService, find_problems, fix_italic_g, flat_powers, function_defs, normalise as norm_math,
+                        plan_math, tidy_result)
 from .memory import LessonMemory, ScreenObs, label_key, parse_numbered_items, questions_text, split_questions
 
 log = logging.getLogger("glass.answer")
@@ -1055,8 +1056,11 @@ class AnswerEngine:
                                remember: bool = True, think: bool = False) -> dict:
         """Shared by snips, screen questions and "answer question 2b": show the student
         exactly what was read, then answer each question in its own block."""
-        problem_text = norm_math(problem_text).strip()
-        qs = qs if qs is not None else split_questions(problem_text)
+        problem_text = fix_italic_g(norm_math(problem_text).strip())
+        if qs is None:
+            qs = split_questions(problem_text)
+        else:  # questions picked from the screen: their functions may be defined in the stem
+            qs = [{**q, "text": fix_italic_g(q["text"], function_defs(f"{q.get('stem') or ''}\n{q['text']}"))} for q in qs]
         ans["ocr"] = problem_text[:3000]
         ans["questions"] = qs[:20]
         ans["powers"] = flat_powers(problem_text)
@@ -1073,7 +1077,8 @@ class AnswerEngine:
             got = await self._solve(plan_math(q["text"], q.get("stem") or ""), limit=2)
             if got:
                 exact[q["label"]] = "; ".join(tidy_result(v) for _, v in got)
-                verified += [(f"[{q['label']}] {e}", tidy_result(v)) for e, v in got]
+                shown = q["text"].strip().rstrip("=?| ").strip() or got[0][0]  # "fg(2)" reads better than its SymPy form
+                verified += [(f"[{q['label']}] {shown}", tidy_result(v)) for _, v in got[:1]]
         if not qs:
             verified = await self._solve(find_problems(problem_text), limit=8)
         ans["exact"] = exact

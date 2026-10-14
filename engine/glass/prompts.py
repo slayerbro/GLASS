@@ -8,7 +8,8 @@ SUBJECT_GUIDES: dict[str, str] = {
     "maths": (
         "Maths (Edexcel International GCSE). Give the method in plain words then the answer, exactly as a student "
         "would say it: 'Subtract seven from both sides, then divide by two, so x equals six.' Use exact values "
-        "(fractions, surds) unless told to round; state rounding (e.g. 3 s.f.). Angles in degrees. For any arithmetic, "
+        "(fractions, surds) unless told to round; state rounding (e.g. 3 s.f.). Angles in degrees. Composite functions: "
+        "fg(x) means f(g(x)) (apply g first), never a product; f⁻¹ is the inverse. For any arithmetic, "
         "algebra or trig you MUST write a CALC line so it is computed exactly."
     ),
     "physics": (
@@ -172,6 +173,8 @@ Rules:
 - The text came from OCR: a power may have been flattened, so "x2" next to maths almost always means x^2. If you had to assume something like that, say so in the working.
 - For a diagram question, name the method (e.g. Pythagoras) in the working.
 - Never invent questions that are not in the list. Write maths in plain text or LaTeX ($...$).
+- GCSE conventions: fg(x) means f(g(x)) — apply g first, then f — never f(x)×g(x); gf(4) = g(f(4)); f⁻¹(x) is the
+  inverse function; f(x)^2 and f²(x) differ from ff(x). A blank like "fg(2) =" asks for its value.
 If the selection is not a question at all, write 2-3 sentences explaining what it shows instead, with no headings.
 Subject guidance: {guide}"""
 

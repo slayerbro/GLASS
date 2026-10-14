@@ -787,3 +787,51 @@ def test_no_exact_answer_for_wordy_questions():
 
     assert plan_math("Describe the trend shown in the graph") == []
     assert plan_math("Factorise x2 - 9") == ["factor(x2 - 9)"]  # a flattened power is refused by SymPy, never mis-solved
+
+
+# ---------------------------------------------------------------- feedback round 5: a real composite-functions slide
+# What Windows OCR read from the student's slide ("If f(x) = 3x and g(x) = x + 1, determine:" with five
+# answer boxes). Before: one blob, fg read as a product (fg(2) = 18), and "gg(x)" misread as "99 (x)".
+FG_SLIDE = """f f(x) = 3x and g(x) = x + 1, determine:
+fg(2) =|
+gf(4)=
+fg(x) =
+gf (x)=
+99 (x) =|"""
+
+
+def test_fill_in_blanks_are_separate_questions():
+    from glass.memory import split_questions
+
+    qs = split_questions(FG_SLIDE)
+    assert [q["label"] for q in qs] == ["(a)", "(b)", "(c)", "(d)", "(e)"]
+    assert qs[0]["text"] == "fg(2) =" and "g(x) = x + 1" in qs[0]["stem"]
+    assert [q["label"] for q in split_questions("1. If f(x) = 3x, find:\nf(2) = ?   f(5) = ?\nf(x+1) =")] == ["1(a)", "1(b)", "1(c)"]
+    assert split_questions("Solve 2x + 3 = 11") == [{"label": "1", "text": "Solve 2x + 3 = 11"}]
+
+
+def test_composite_functions_are_composed_not_multiplied(math):
+    from glass.mathsolve import fix_italic_g, plan_math, tidy_result
+    from glass.memory import split_questions
+
+    got = []
+    for q in split_questions(fix_italic_g(FG_SLIDE)):
+        plan = plan_math(q["text"], q["stem"])
+        got.append(tidy_result(math.run(plan[0]).value))
+    assert got == ["9", "13", "3x + 3", "3x + 1", "x + 2"]  # fg(2) = f(g(2)) = f(3) = 9, not 3·2·3 = 18
+    assert "gg (x) =" in fix_italic_g(FG_SLIDE)  # italic g misread as 9
+    assert fix_italic_g("Expand 9(x + 1) where g(x) = 2x") == "Expand 9(x + 1) where g(x) = 2x"  # a real 9 stays
+
+
+@pytest.mark.parametrize("question,stem,expected", [
+    ("Solve fg(x) = 12", "f(x) = 3x and g(x) = x + 1", "x = 3"),
+    ("Solve f(x) = 12", "f(x) = x^2 + 3", "x = -3, x = 3"),
+    ("f(x) = 2x - 1. Find ff(3)", "", "9"),
+    ("Find gf(-2)", "f(x) = x^2, g(x) = 2x + 5", "13"),
+    ("3 + 4 * 2 =", "", "11"),
+])
+def test_more_function_questions(math, question, stem, expected):
+    from glass.mathsolve import plan_math, tidy_result
+
+    plan = plan_math(question, stem)
+    assert plan and tidy_result(math.run(plan[0]).value) == expected, plan

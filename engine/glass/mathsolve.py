@@ -386,7 +386,57 @@ _VERBS = [
     ("solve", re.compile(r"\b(solve|find the value of x|find x)\b", re.I)),
     ("eval", re.compile(r"\b(work out|calculate|evaluate|find the value of|what is|find)\b", re.I)),
 ]
-_FUNC_DEF = re.compile(r"\b([fgh])\(\s*([a-z])\s*\)\s*=\s*([^\n,;]+)")
+# "f(x) = 3x and g(x) = x + 1, determine:" -> {"f": ("x", "3x"), "g": ("x", "x + 1")}
+_FUNC_DEF = re.compile(r"(?<![A-Za-z0-9])([fghpq])\s*\(\s*([a-z])\s*\)\s*=\s*(.+?)"
+                       r"(?=\s*(?:,|;|:|\.\s|\band\b|\bdetermine\b|\bfind\b|\bwork\b|\bcalculate\b|\bwhere\b|\bsolve\b|\n|$))",
+                       re.I)
+# a call of one or more defined functions: f(3), fg(2), gf(x), ff(x+1)
+_CALL = re.compile(r"(?<![A-Za-z0-9])([a-z9]{1,3})\s*\(\s*([^()=]{1,20}?)\s*\)")
+
+
+def _is_def(m: re.Match) -> bool:
+    """f(x) = 3x is a definition; "f(x) = 12" (to solve) is not: the body must use the variable."""
+    body = m.group(3).strip().rstrip(".")
+    return bool(body) and m.group(1).islower() and bool(re.search(rf"(?<![A-Za-z]){m.group(2)}(?![A-Za-z])", body))
+
+
+def function_defs(text: str) -> dict[str, tuple[str, str]]:
+    defs: dict[str, tuple[str, str]] = {}
+    for m in _FUNC_DEF.finditer(normalise(text)):
+        body = m.group(3).strip().rstrip(".")
+        if _is_def(m):
+            defs.setdefault(m.group(1), (m.group(2), body))
+    return defs
+
+
+def fix_italic_g(text: str, defs: dict[str, tuple[str, str]] | None = None) -> str:
+    """OCR reads an italic g as 9. When g is a function on the page, "99(x)" is gg(x) and
+    "f9(2)" is fg(2) — but "9(x + 1)" with real numbers inside stays a number."""
+    defs = function_defs(text) if defs is None else defs
+    if "g" not in defs:
+        return text
+
+    def fix(m: re.Match) -> str:
+        name = m.group(1)
+        if "9" not in name or re.match(r"\s*\(\s*[\d.]+\s*[+\-*/]", text[m.end():]):
+            return name
+        if name == "9" and (not re.match(r"\s*\(\s*-?[\w.]+\s*\)", text[m.end():]) or
+                            re.search(r"\b(expand|simplify|factori[sz]e|multiply|work out|calculate)\W*$", text[:m.start()], re.I)):
+            return name  # a lone 9 before a bracket of maths is a number: "Expand 9(x + 1)"
+        return name.replace("9", "g") if all(c in defs or c == "9" for c in name) else name
+
+    return re.sub(r"(?<![A-Za-z0-9.])([fgh9]{1,3})(?=\s*\()", fix, text)
+
+
+def compose(name: str, arg: str, defs: dict[str, tuple[str, str]]) -> str | None:
+    """fg(2) is f(g(2)): apply the rightmost function first (GCSE composite functions)."""
+    if not name or not all(c in defs for c in name):
+        return None
+    expr = arg.strip()
+    for c in reversed(name):
+        var, body = defs[c]
+        expr = re.sub(rf"(?<![A-Za-z]){var}(?![A-Za-z])", f"({expr})", body)
+    return expr
 _INEQ = re.compile(r"(<=|>=|<|>)")
 
 
@@ -428,15 +478,25 @@ def plan_math(question: str, stem: str = "") -> list[str]:
     q = normalise(question)
     q = re.sub(r"(\d+(?:\.\d+)?)\s*%\s*of\b", r"(\1/100)*", q)  # 15% of 80
     q = re.sub(r"(\d)\s+of\s+(?=\d)", r"\1*", q)  # 3/4 of 20
-    # f(x) defined in the stem (or the question): use it
-    for m in _FUNC_DEF.finditer(normalise(stem) + "\n" + q):
-        name, var, body = m.group(1), m.group(2), m.group(3).strip().rstrip(".")
-        if not body:
-            continue
-        q = q.replace(m.group(0), "")
-        q = re.sub(rf"\b{name}\(\s*{var}\s*\)", f"({body})", q)
-        q = re.sub(rf"\b{name}\(\s*(-?\d+(?:\.\d+)?)\s*\)",
-                   lambda n: "(" + re.sub(rf"(?<![A-Za-z]){var}(?![A-Za-z])", f"({n.group(1)})", body) + ")", q)
+    # functions defined in the stem (or the question): f(3), fg(2) = f(g(2)), gf(x), "Solve fg(x) = 12"
+    defs = function_defs(stem + "\n" + q)
+    if defs:
+        q = _FUNC_DEF.sub(lambda m: " " if _is_def(m) else m.group(0), q)  # a definition is not something to solve
+        q = fix_italic_g(q, defs)
+        called = [False]
+
+        def call(m: re.Match) -> str:
+            e = compose(m.group(1), m.group(2), defs)
+            if e is None:
+                return m.group(0)
+            called[0] = True
+            return f"({e})"
+
+        q = _CALL.sub(call, q)
+        blank = re.fullmatch(r"\s*(.+?)\s*=\s*[?|_\[\]\s]*", q)
+        if called[0] and blank:  # "fg(2) =": the value, or the simplified expression
+            e = blank.group(1).strip()
+            return [f"expand({e})" if re.search(r"(?<![a-z])[a-z](?![a-z])", e) else e]
     verb = next((v for v, rx in _VERBS if rx.search(q)), None)
     eqs = find_problems(q)
     if verb in ("solve", None) or eqs:
@@ -454,6 +514,10 @@ def plan_math(question: str, stem: str = "") -> list[str]:
                 if lhs and rhs and re.search(r"[a-z]", lhs + rhs):
                     return [f"reduce_inequalities({lhs} {m.group(1)} {rhs})"]
     if verb is None:
+        blank = re.fullmatch(r"\s*([0-9a-z()+\-*/^. ]{2,40}?)\s*=\s*[?|_\[\]\s]*", _times_sign(q))
+        if blank and re.search(r"\d", blank.group(1)) and re.search(r"[+\-*/^]", blank.group(1)):
+            e = blank.group(1).strip()
+            return [f"simplify({e})" if re.search(r"(?<![a-z])[a-z](?![a-z])", e) else e]
         return []
     m = _VERBS[[v for v, _ in _VERBS].index(verb)][1].search(q)
     rest = re.sub(r"^\s*(?:the\s+)?(?:exact\s+)?(?:value\s+of|answer\s+to)?\s*", "", q[m.end():], flags=re.I)

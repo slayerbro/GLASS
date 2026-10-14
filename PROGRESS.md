@@ -174,6 +174,21 @@ Tests: 130 unit tests + 5 macOS port tests pass. These include powers read from 
 
 Not verified: Windows OCR's own word boxes and digit reading (written to its API, not run). Also not run: the thinking model's latency on the laptop. If Windows OCR skips the enlarged digits, the font comparison still reads them.
 
+## 2026-10-14 — feedback round 5: a real composite-functions slide
+
+The student's slide: "If f(x) = 3x and g(x) = x + 1, determine:" with five answer boxes. GLASS:
+- treated it as one question with a bogus "Answer: 6";
+- read fg(2) as f(2)×g(2) = 18, when the answer is f(g(2)) = 9;
+- read the italic gg(x) as "99 (x)".
+
+Fixed:
+- **Fill-in blanks are questions.** Rows like "fg(2) = ?" (including two side by side) become parts (a), (b)… under the shared stem.
+- **Functions are understood.** Every definition on the page is parsed, including "f(x) = 3x and g(x) = x + 1". Calls are composed GCSE-style (fg = f∘g, rightmost first), so SymPy gives fg(2) = 9, gf(4) = 13, fg(x) = 3x + 3, gf(x) = 3x + 1 and gg(x) = x + 2. It also handles "Solve fg(x) = 12" and ff(3).
+- **Italic g misread as 9** is repaired when g is a function on the page ("99(x)" → gg(x)). A real 9 before a bracket of maths stays a number.
+- **The prompt and the maths subject guide state the conventions:** fg(x) = f(g(x)), never a product; f⁻¹ is the inverse.
+
+Tests: 137 unit tests, including the slide's exact OCR text, + 5 macOS port tests.
+
 ## Known limitations (honest)
 
 - **Real classroom audio not tested.** All speech tests used Windows SAPI voices. Real teachers (accents, crosstalk, poor microphones, Meet compression) will reduce accuracy. Add name spellings in Settings → Student if GLASS mishears "Sanad".

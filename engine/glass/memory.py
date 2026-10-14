@@ -118,6 +118,16 @@ def split_questions(text: str) -> list[dict]:
         else:
             cur["stem"] = (cur["stem"] + "\n" + line).strip()
 
+    # no lettered parts, but a row of blanks to fill in ("fg(2) = ?", "gf(4) = ?"): each is a part
+    for q in numbers:
+        if not q["parts"]:
+            rest, blanks = _fill_ins(q["stem"])
+            if len(blanks) >= 2:
+                q["stem"], q["parts"] = rest, [[chr(97 + i), b] for i, b in enumerate(blanks[:20])]
+    if not numbers:
+        rest, blanks = _fill_ins("\n".join(preamble))
+        if len(blanks) >= 2:
+            return [{"label": f"({chr(97 + i)})", "text": b, "stem": rest} for i, b in enumerate(blanks[:20])]
     pre = "\n".join(preamble).strip()
     if not numbers:
         return [{"label": "1", "text": pre}] if pre else []
@@ -131,6 +141,33 @@ def split_questions(text: str) -> list[dict]:
             label = f"{q['n']}({letter})" if q["n"] else f"({letter})"
             out.append({"label": label, "text": body, "stem": stem})
     return [q for q in out if q["text"] or q["stem"]]
+
+
+# "fg(2) = ?", "gf (x)=|", "3 + 4 × 2 =": a blank to fill in. The answer box often reads as ? | _ [ ]
+_FILL = re.compile(r"^\s*(?P<e>[^=]{1,40}?)\s*=\s*[?|_.\[\]\s]*$")
+_FILL_CALL = re.compile(r"([A-Za-z0-9]{1,3}\s*\([^()=]{1,12}\))\s*=\s*[?|_\[\]]*")
+
+
+def _blank(e: str) -> bool:
+    """Is the left side of "... =" a maths expression (not a sentence like "Total marks =")?"""
+    return len(e.split()) <= 5 and not re.search(r"[A-Za-z]{5,}", e) and bool(re.search(r"[\d(]", e))
+
+
+def _fill_ins(text: str) -> tuple[str, list[str]]:
+    """-> (the other lines, the fill-in blanks in reading order). Two blanks side by side
+    on one OCR line ("fg(2) = ?   gf(4) = ?") are split."""
+    rest, blanks = [], []
+    for line in text.splitlines():
+        calls = _FILL_CALL.findall(line)
+        if len(calls) >= 2 and not re.sub(_FILL_CALL, "", line).strip(" ?|_[]"):
+            blanks += [f"{c.strip()} =" for c in calls]
+            continue
+        m = _FILL.match(line)
+        if m and _blank(m.group("e")):
+            blanks.append(f"{m.group('e').strip()} =")
+        else:
+            rest.append(line)
+    return "\n".join(rest).strip(), blanks
 
 
 def questions_text(qs: list[dict]) -> str:
