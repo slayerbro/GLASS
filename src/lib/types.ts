@@ -17,6 +17,7 @@ export interface EngineStatus {
   asr: ServiceStatus;
   llm: ServiceStatus;
   vision: ServiceStatus;
+  reasoning?: ServiceStatus;
   screen: ServiceStatus;
   thermal: { level: 'ok' | 'warm' | 'hot' | 'critical'; gpu_temp?: number | null; cpu_perf?: number | null;
              reason?: string; message?: string; driver_errors?: number };
@@ -73,8 +74,13 @@ export interface Answer {
   title?: string;
   origin?: 'reference' | 'screen' | null;
   questions?: SnipQuestion[]; // what GLASS read, one entry per question / part
-  parts?: (SnipQuestion & { answer: string })[]; // each question with its own answer
+  parts?: (SnipQuestion & { answer: string; exact?: string })[]; // each question with its own answer
+  exact?: Record<string, string>; // label -> exact answer computed by SymPy
   powers?: string[]; // "x2"-style tokens that are probably flattened powers
+  powers_read?: string[]; // powers found in the image, e.g. "x^2", "(x + 3)^2"
+  powers_unreadable?: string[]; // a power was there but couldn't be read
+  auto_vision?: boolean; // re-read with the vision model because of an unreadable power
+  thinking_hard?: boolean; // solved by the reasoning model
   can_vision?: boolean;
   replaces?: string;
 }
@@ -167,6 +173,8 @@ export interface Settings {
   screen_source: { kind: 'window' | 'monitor'; hwnd?: number; title?: string; monitor?: number; meet?: boolean } | null;
   screen_crop: number[] | null;
   screen_autosolve?: boolean;
+  reasoning_model?: string;
+  snip_think?: boolean;
   exclusion_zones: number[][];
   ocr_engine: 'windows' | 'tesseract';
   vision_model: string;

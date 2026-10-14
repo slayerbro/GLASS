@@ -131,6 +131,10 @@ DEFAULTS: dict[str, Any] = {
     "exclusion_zones": [],  # list of [x, y, w, h] relative rects to blank out
     "ocr_engine": "windows",  # windows | tesseract
     "vision_model": "qwen3-vl:4b-instruct",
+    # a reasoning ("thinking") model for hard maths in Snip & Solve: much stronger at multi-step
+    # problems than the fast answer model, but slower (it works the problem out before answering)
+    "reasoning_model": "qwen3:4b",
+    "snip_think": False,  # always use it for snips (slower, more heat)
     "ollama_url": "http://127.0.0.1:11434",
     "store_raw_media": False,
     "store_transcript": True,

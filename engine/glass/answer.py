@@ -25,7 +25,7 @@ from . import prompts as P
 from .detect import NameHit, QuestionSignal, content_words, extract_reference, question_kind
 from .texts import QUOTE_REQUEST, find_quotes, normalise as norm_text, quote_in
 from .llm import ANSWER, DIRECT, REVISION, TASK, VISION, LLMError, OllamaClient, Scheduler, reraise_if_cancelled
-from .mathsolve import MathService, find_problems, flat_powers, normalise as norm_math
+from .mathsolve import MathService, find_problems, flat_powers, normalise as norm_math, plan_math, tidy_result
 from .memory import LessonMemory, ScreenObs, label_key, parse_numbered_items, questions_text, split_questions
 
 log = logging.getLogger("glass.answer")
@@ -793,14 +793,15 @@ class AnswerEngine:
     # ------------------------------------------------------------- long-form modes
     async def _stream_markdown(self, ans: dict, system: str, user: str, prio: int, field: str = "body",
                                images: list[bytes] | None = None, model: str | None = None,
-                               num_predict: int = 700, on_update: Callable[[dict], None] | None = None) -> None:
+                               num_predict: int = 700, on_update: Callable[[dict], None] | None = None,
+                               think: bool = False) -> None:
         t0 = time.perf_counter()
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
         async def job():
             ans["status"] = "streaming"
             buf = ""
-            async for chunk in self.llm.stream_chat(model or self.text_model, msgs, think=False,
+            async for chunk in self.llm.stream_chat(model or self.text_model, msgs, think=think,
                                                     num_ctx=self.num_ctx, num_predict=num_predict, temperature=0.3,
                                                     images=images):
                 if "first_ms" not in ans["latency"]:
@@ -896,7 +897,10 @@ class AnswerEngine:
     def after_vision(self) -> None:
         """The vision model evicts the answer model on 8 GB GPUs; reload it right away
         (in the background) so the next teacher question doesn't pay the reload."""
-        if self.vision_model != self.text_model:
+        self.after_model(self.vision_model)
+
+    def after_model(self, model: str) -> None:
+        if model != self.text_model:
             asyncio.create_task(self._rewarm())
 
     async def _rewarm(self) -> None:
@@ -957,10 +961,17 @@ class AnswerEngine:
         ans["sources"].append("vision")
         return text
 
-    async def solve_snip(self, image_png: bytes, ocr_text: str, use_vision: bool) -> dict:
+    async def solve_snip(self, image_png: bytes, ocr_text: str, use_vision: bool, powers: dict | None = None) -> dict:
         """Snip & Solve: the student selected a region of the screen."""
+        powers = powers or {}
+        can_vision = bool(self.settings.profile().get("vision_enabled", True))
         ans = self._new("snip", question="Selected region", title="Your selection", ocr=ocr_text[:3000],
-                        can_vision=bool(self.settings.profile().get("vision_enabled", True)))
+                        can_vision=can_vision, powers_read=powers.get("fixed", []),
+                        powers_unreadable=powers.get("unreadable", []))
+        if powers.get("unreadable") and can_vision and not use_vision:
+            # a power is there but couldn't be read: the vision model reads maths layout properly
+            use_vision = True
+            ans["auto_vision"] = True
         self._last_snip = (ans["id"], image_png)
         self._push(ans, force=True)
         t0 = time.perf_counter()
@@ -992,7 +1003,8 @@ class AnswerEngine:
             ans["sources"].append("ocr")
         return await self._solve_selection(ans, problem_text, t0)
 
-    async def resolve_snip(self, answer_id: str, text: str | None = None, vision: bool = False) -> dict:
+    async def resolve_snip(self, answer_id: str, text: str | None = None, vision: bool = False,
+                           think: bool = False) -> dict:
         """The student checked what GLASS read: solve their corrected text, or re-read the
         same selection with the vision model (better with powers, fractions and diagrams)."""
         old = self.answers.get(answer_id)
@@ -1019,10 +1031,11 @@ class AnswerEngine:
             if read is None:
                 return ans
             return await self._solve_selection(ans, read, t0)
-        ans["sources"].append("edited")
+        if text:
+            ans["sources"].append("edited")
         if self._last_snip and self._last_snip[0] == answer_id:
             self._last_snip = (ans["id"], self._last_snip[1])
-        return await self._solve_selection(ans, text or old.get("ocr", ""), t0)
+        return await self._solve_selection(ans, text or old.get("ocr", ""), t0, think=think)
 
     async def solve_screen(self, text: str, labels: list[str] | None = None) -> dict:
         """Solve questions GLASS found on the shared screen (all, or the ones tapped)."""
@@ -1039,7 +1052,7 @@ class AnswerEngine:
         return await self._solve_selection(ans, questions_text(qs), time.perf_counter(), qs=qs, remember=False)
 
     async def _solve_selection(self, ans: dict, problem_text: str, t0: float, qs: list[dict] | None = None,
-                               remember: bool = True) -> dict:
+                               remember: bool = True, think: bool = False) -> dict:
         """Shared by snips, screen questions and "answer question 2b": show the student
         exactly what was read, then answer each question in its own block."""
         problem_text = norm_math(problem_text).strip()
@@ -1053,7 +1066,17 @@ class AnswerEngine:
         if remember:  # later, "answer question 2b" can refer to what was snipped
             self.mem.add_screen(ScreenObs(time.time(), problem_text, parse_numbered_items(problem_text),
                                           find_problems(problem_text), "Selection", source="snip"))
-        verified = await self._solve(find_problems(problem_text), limit=8)
+        # exact answers, question by question (the model explains them; it doesn't do the algebra)
+        exact: dict[str, str] = {}
+        verified: list[tuple[str, str]] = []
+        for q in qs[:12]:
+            got = await self._solve(plan_math(q["text"], q.get("stem") or ""), limit=2)
+            if got:
+                exact[q["label"]] = "; ".join(tidy_result(v) for _, v in got)
+                verified += [(f"[{q['label']}] {e}", tidy_result(v)) for e, v in got]
+        if not qs:
+            verified = await self._solve(find_problems(problem_text), limit=8)
+        ans["exact"] = exact
         if verified:
             ans["verified"] = True
             ans["result"] = "; ".join(f"{e} → {v}" for e, v in verified)
@@ -1067,10 +1090,26 @@ class AnswerEngine:
                      + ", ".join(f"{p[:-1]}^{p[-1]}" for p in ans["powers"]) + "; say so in the working if you assume it.")
 
         def update(a: dict) -> None:
-            a["parts"] = pair_parts(a["questions"], a["body"])
+            a["parts"] = [{**p, "exact": exact.get(p["label"], "")} for p in pair_parts(a["questions"], a["body"])]
 
-        await self._stream_markdown(ans, system, user, DIRECT, num_predict=min(1500, 220 + 140 * max(1, len(qs))),
-                                    on_update=update)
+        model = None
+        if think or self.settings.get("snip_think"):
+            rm = self.settings.get("reasoning_model") or ""
+            if rm and await self.llm.has_model(rm):
+                model, think = rm, True
+                ans["thinking_hard"] = True
+                ans["sources"].append("thinking model")
+                self._push(ans, force=True)
+            else:
+                think = False
+                ans["unsure"] = (f"the thinking model ({rm or 'none set'}) isn't downloaded, so the fast model answered — "
+                                 f"download it in Settings → AI models")
+        # thinking tokens count towards the limit: give the reasoning model room to work
+        budget = min(1500, 220 + 140 * max(1, len(qs))) + (4500 if think else 0)
+        await self._stream_markdown(ans, system, user, DIRECT, num_predict=budget, on_update=update, think=think,
+                                    model=model)
+        if model:
+            self.after_model(model)
         update(ans)
         if not ans["parts"]:
             ans["body"] = _paragraphs(ans["body"])

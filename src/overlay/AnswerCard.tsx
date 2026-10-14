@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { useState } from 'react';
-import { BookOpen, Check, CircleAlert, Clock3, Eye, Pencil, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { BookOpen, Brain, Check, CircleAlert, Clock3, Eye, Pencil, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
 import type { Answer, SnipQuestion } from '../lib/types';
 import { Markdown } from '../components/Markdown';
 import { addStudyText, cmd } from '../lib/engine';
@@ -151,6 +151,7 @@ function SnipCard({ a }: { a: Answer }) {
   };
   const startEdit = () => { setDraft(a.ocr || qs.map((q) => `${q.label}. ${q.text}`).join('\n')); setEditing(true); };
   const canVision = a.can_vision && !a.sources.includes('vision') && !a.origin;
+  const solving = a.thinking_hard ? 'Thinking it through carefully (slower, more accurate)…' : qs.length > 1 ? `Solving ${qs.length} questions…` : 'Solving…';
 
   return (
     <div className="px-4 pt-3 pb-3">
@@ -176,9 +177,21 @@ function SnipCard({ a }: { a: Answer }) {
           </div>
         </div>
       ) : a.status === 'error' ? <ErrorLine a={a} /> : !qs.length ? (
-        <Thinking label={a.status === 'reading' ? 'Reading your selection…' : 'Reading…'} />
+        <Thinking label={a.status === 'reading' ? (a.auto_vision ? 'Reading the maths carefully (there are powers)…' : 'Reading your selection…') : 'Reading…'} />
       ) : (
         <>
+          {!!a.powers_read?.length && !a.sources.includes('vision') && (
+            <div className="mb-1 flex gap-1.5 text-[11.5px] text-exact leading-snug">
+              <Check size={12} className="mt-[2px] flex-none" />
+              <span>Read powers: {a.powers_read.map(pretty).join(', ')}</span>
+            </div>
+          )}
+          {!!a.powers_unreadable?.length && !a.sources.includes('vision') && (
+            <div className="mb-1.5 flex gap-1.5 text-[11.5px] text-called leading-snug">
+              <CircleAlert size={12} className="mt-[2px] flex-none" />
+              <span>There's a power after {a.powers_unreadable.map((p) => `“${p}”`).join(', ')} I couldn't read clearly — check it, or tap Edit.</span>
+            </div>
+          )}
           {!!a.powers?.length && (
             <div className="mb-1.5 flex gap-1.5 text-[11.5px] text-called leading-snug">
               <CircleAlert size={12} className="mt-[2px] flex-none" />
@@ -188,11 +201,12 @@ function SnipCard({ a }: { a: Answer }) {
           {!parts && <div className="eyebrow mb-0.5 text-faint">What I read</div>}
           <div className="max-h-[480px] scroll pr-1 -mr-1">
             {withNewStemLines(parts ?? qs.map((q) => ({ ...q, answer: '' }))).map(([p, stem], i) => (
-              <QuestionBlock key={p.label + i} q={p} stem={stem} answer={parts ? p.answer : null} busy={busy} />
+              <QuestionBlock key={p.label + i} q={p} stem={stem} answer={parts ? p.answer : null} busy={busy}
+                exact={a.exact?.[p.label]} solving={solving} />
             ))}
             {!parts && (a.body ? (
               <div className="pt-2 border-t border-white/[0.08]"><Markdown text={a.body} className={busy ? 'caret' : ''} /></div>
-            ) : busy && <Thinking label={qs.length > 1 ? `Solving ${qs.length} questions…` : 'Solving…'} />)}
+            ) : busy && <Thinking label={solving} />)}
           </div>
         </>
       )}
@@ -201,6 +215,7 @@ function SnipCard({ a }: { a: Answer }) {
       {!editing && !busy && (a.ocr || qs.length > 0) && (
         <div className="mt-2.5 flex flex-wrap gap-1">
           <button className="btn" title="Correct what GLASS read and solve again" onClick={startEdit}><Pencil size={11} />Edit</button>
+          {a.status === 'done' && !a.thinking_hard && <button className="btn" title="Solve again with the thinking model: slower, much better at hard multi-step maths" onClick={() => retry({ think: true })}><Brain size={11} />Think harder</button>}
           {canVision && <button className="btn" title="Read the selection again with the vision model (better for powers, fractions and diagrams; slower)" onClick={() => retry({ vision: true })}><Eye size={11} />Read again (vision)</button>}
           {a.status === 'done' && a.ocr && (
             <>
@@ -225,17 +240,27 @@ function withNewStemLines<T extends SnipQuestion>(qs: T[]): [T, string][] {
   });
 }
 
-function QuestionBlock({ q, stem, answer, busy }: { q: SnipQuestion; stem: string; answer: string | null; busy: boolean }) {
+/** "x^2" -> "x²" for display. */
+const SUP: Record<string, string> = { 0: '⁰', 1: '¹', 2: '²', 3: '³', 4: '⁴', 5: '⁵', 6: '⁶', 7: '⁷', 8: '⁸', 9: '⁹', '-': '⁻', n: 'ⁿ', '(': '', ')': '' };
+const pretty = (s: string) => s.replace(/\^(\(?-?[0-9n]+\)?)/g, (_m, e: string) => [...e].map((c) => SUP[c] ?? c).join(''));
+
+function QuestionBlock({ q, stem, answer, busy, exact, solving }: { q: SnipQuestion; stem: string; answer: string | null; busy: boolean; exact?: string; solving: string }) {
   return (
     <div className="snip-q">
       {stem && <div className="q-stem line-clamp-4">{stem}</div>}
       <div className="flex gap-2 items-start">
         <span className="q-label">{q.label || 'Q'}</span>
-        <div className="q-text flex-1 min-w-0">{q.text || <span className="text-faint">(an extra part GLASS answered)</span>}</div>
+        <div className="q-text flex-1 min-w-0">{q.text ? pretty(q.text) : <span className="text-faint">(an extra part GLASS answered)</span>}</div>
       </div>
+      {exact && (
+        <div className="mt-1 ml-[2px] flex items-center gap-1.5" title="Worked out exactly by SymPy, not by the AI">
+          <span className="chip chip-exact h-[17px] text-[10.5px]"><Check size={10} />exact</span>
+          <span className="mono text-[12px] text-exact selectable">{pretty(exact)}</span>
+        </div>
+      )}
       {answer !== null && (
         <div className="q-answer">
-          {answer ? <Markdown text={answer} /> : busy ? <Thinking label="Solving…" /> : <span className="text-[12px] text-faint">Not answered — tap Edit to check this question.</span>}
+          {answer ? <Markdown text={answer} /> : busy ? <Thinking label={solving} /> : <span className="text-[12px] text-faint">Not answered — tap Edit to check this question.</span>}
         </div>
       )}
     </div>

@@ -24,6 +24,7 @@ from typing import Callable
 
 import numpy as np
 
+from . import superscript
 from .mathsolve import find_problems, normalise
 from .memory import ScreenObs, parse_numbered_items
 
@@ -252,6 +253,45 @@ class OCR:
         self.last_ms = (time.perf_counter() - t) * 1000
         return lines
 
+    async def fix_powers(self, img: np.ndarray, lines: list[dict]) -> tuple[list[str], list[str]]:
+        """Find exponents in the image and write them into the line texts as ^n (see
+        superscript.py). -> (powers fixed, places with a power that couldn't be read)."""
+        gray = img[:, :, :3].astype(np.float32).mean(axis=2) if img.ndim == 3 else img.astype(np.float32)
+        exps = (await asyncio.to_thread(superscript.find_exponents, gray, lines))[:24]  # bounded work per frame
+        if not exps:
+            return [], []
+        try:
+            readings = await self._read_glyphs(exps)
+        except Exception as e:  # reading failed: still report where the powers are
+            log.warning("reading exponents failed: %s", e)
+            readings = [""] * len(exps)
+        for e, r in zip(exps, readings):
+            e.text = superscript.clean_reading(r)
+            if not e.text:  # the engine skipped it: compare with the digits in this computer's fonts
+                e.text = await asyncio.to_thread(superscript.classify_digits, e.crop)
+        return superscript.apply(lines, exps)
+
+    async def _read_glyphs(self, exps: list) -> list[str]:
+        if _tesseract():  # best at single characters
+            import pytesseract
+            from PIL import Image
+
+            pytesseract.pytesseract.tesseract_cmd = _tesseract()
+
+            def one(e) -> str:
+                sheet, spans = superscript.glyph_sheet([e])
+                im = Image.fromarray(sheet[:, :, 0])
+                for psm in (10, 8, 7):
+                    t = pytesseract.image_to_string(im, config=f"--psm {psm} -c tessedit_char_whitelist=0123456789n-").strip()
+                    if t:
+                        return t
+                return ""
+
+            return await asyncio.to_thread(lambda: [one(e) for e in exps])
+        # no Tesseract: the enlarged exponents on one page, read by the main engine
+        sheet, spans = superscript.glyph_sheet(exps)
+        return superscript.read_sheet_line(await self.read(sheet, "en-US"), spans)
+
     @staticmethod
     def _math_score(s: str) -> int:
         return len(re.findall(r"[0-9a-zA-Z()=+\-*/^]", s))
@@ -285,6 +325,7 @@ class OCR:
             alt = fix_power_marks(alt)
             if self._math_score(alt) > self._math_score(l["text"]) + 1:
                 l["text"] = alt
+                l["words"] = None  # the word boxes describe the old reading
 
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as ex:
@@ -320,7 +361,9 @@ class OCR:
             x2 = [wd.bounding_rect.x + wd.bounding_rect.width for wd in words]
             y2 = [wd.bounding_rect.y + wd.bounding_rect.height for wd in words]
             out.append({"text": line.text, "x": min(xs) / scale, "y": min(ys) / scale,
-                        "w": (max(x2) - min(xs)) / scale, "h": (max(y2) - min(ys)) / scale})
+                        "w": (max(x2) - min(xs)) / scale, "h": (max(y2) - min(ys)) / scale,
+                        "words": [{"text": wd.text, "x": wd.bounding_rect.x / scale, "y": wd.bounding_rect.y / scale,
+                                   "w": wd.bounding_rect.width / scale, "h": wd.bounding_rect.height / scale} for wd in words]})
         return out
 
     def _read_tesseract(self, img: np.ndarray, lang: str) -> list[dict]:
@@ -336,14 +379,16 @@ class OCR:
             if not word.strip() or float(data["conf"][i]) < 40:
                 continue
             key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
-            ln = lines.setdefault(key, {"words": [], "x": 1e9, "y": 1e9, "x2": 0, "y2": 0})
+            ln = lines.setdefault(key, {"words": [], "boxes": [], "x": 1e9, "y": 1e9, "x2": 0, "y2": 0})
             ln["words"].append(word)
+            ln["boxes"].append({"text": word, "x": data["left"][i], "y": data["top"][i], "w": data["width"][i],
+                                "h": data["height"][i]})
             ln["x"] = min(ln["x"], data["left"][i])
             ln["y"] = min(ln["y"], data["top"][i])
             ln["x2"] = max(ln["x2"], data["left"][i] + data["width"][i])
             ln["y2"] = max(ln["y2"], data["top"][i] + data["height"][i])
-        return [{"text": " ".join(l["words"]), "x": l["x"], "y": l["y"], "w": l["x2"] - l["x"], "h": l["y2"] - l["y"]}
-                for l in lines.values()]
+        return [{"text": " ".join(l["words"]), "x": l["x"], "y": l["y"], "w": l["x2"] - l["x"], "h": l["y2"] - l["y"],
+                 "words": l["boxes"]} for l in lines.values()]
 
 
 def fix_power_marks(s: str) -> str:
@@ -385,6 +430,7 @@ class ScreenService:
         self._wgc_key = None
         self._wgc_seen = 0.0  # timestamp of the last WGC frame we analysed
         self._frozen = None  # (image, monitor_left, monitor_top, time) for Snip & Solve
+        self.last_snip_powers: dict = {"fixed": [], "unreadable": []}  # exponents found in the last snip
         self.method = "mac" if IS_MAC else "wgc"
         self.language = "en-US"
 
@@ -630,6 +676,10 @@ class ScreenService:
 
     async def _analyse(self, img: np.ndarray, title: str, source: str = "screen") -> ScreenObs:
         lines = await self.ocr.read(img, self.language)
+        try:
+            await self.ocr.fix_powers(img, lines)
+        except Exception:
+            log.debug("power detection failed", exc_info=True)
         self.stats["ocr_runs"] += 1
         text = lines_to_text(lines)
         obs = ScreenObs(time.time(), text, parse_numbered_items(text), find_problems(text), title, source=source)
@@ -684,6 +734,8 @@ class ScreenService:
         if float(gray.std()) < 3.0:
             return b"", "", True
         lines = await self.ocr.read(img, self.language, small_text=True)
+        fixed, unreadable = await self.ocr.fix_powers(img, lines)
+        self.last_snip_powers = {"fixed": fixed, "unreadable": unreadable}
         text = "\n".join(normalise(fix_power_marks(l["text"])) for l in sorted(lines, key=lambda l: (round(l["y"] / 10), l["x"])))
         png = await asyncio.to_thread(to_png, img, 1600)
         return png, text, False

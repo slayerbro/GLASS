@@ -258,6 +258,16 @@ function Models({ st, patch }: P) {
         {llm?.state === 'missing' && <button className="btn btn-primary" onClick={() => cmd('models.pull', { model: llm.model })}>Download</button>}
         {(llm?.state === 'unavailable' || llm?.state === 'error') && <button className="btn" onClick={() => cmd('llm.check')}>Retry</button>}
       </Row>
+      <Row label="Thinking model for hard maths" hint="Snip & solve's “Think harder” uses a reasoning model: it works the problem out before answering — much more accurate on multi-step maths, but takes longer (often 10–40 s) and makes the laptop work harder.">
+        <select className="field h-[28px] w-[160px]" value={st.reasoning_model || ''} onChange={(e) => patch({ reasoning_model: e.target.value })}>
+          {[...new Set([st.reasoning_model || 'qwen3:4b', ...models.map((x) => x.name).filter((n) => !/vl|vision/i.test(n))])].map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+        {s.status?.reasoning?.state === 'missing' && <button className="btn btn-primary" onClick={() => cmd('models.pull', { model: st.reasoning_model })}>Download</button>}
+        {s.status?.reasoning?.state === 'downloading' && <span className="text-[11.5px] text-muted">{Math.round((s.status.reasoning.progress || 0) * 100)}%</span>}
+      </Row>
+      <Row label="Always think harder on snips" hint="Use the thinking model for every Snip & solve, not just when you tap “Think harder”.">
+        <Toggle on={!!st.snip_think} onChange={(v) => patch({ snip_think: v })} label="Always think harder" />
+      </Row>
       {vis?.state === 'off' ? (
         <Row label="Diagram reading" hint="Reading diagrams, graphs and handwriting needs a vision model, which is too slow on this computer's CPU. Snip & solve still reads typed questions.">
           <span className="chip">Off on this computer</span>

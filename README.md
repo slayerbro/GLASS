@@ -74,7 +74,11 @@ How the Mac version differs:
 - **Fix:** the answer on screen. Add context ("natural selection", "question 4") or tell it what to do: *answer it*, *shorter*, *simpler*, *more detail*, *quotes*, *that's wrong*.
 - **Tell it the topic** in either tab: *the topic is concentration*, *we're doing moles*, *this lesson is about natural selection (biology)*. The topic sticks for the whole lesson, and the answer on screen is redone with it.
 
-**Snip & Solve** shows every question it read, each with its own answer underneath. Check what it read: if a power or sign is wrong (OCR can turn x² into x2), tap **Edit**, fix it and solve again, or **Read again (vision)**. When it reads "x2" in maths, it says it assumed x².
+**Snip & Solve** shows every question it read, each with its own answer underneath.
+- **Powers are read from the image**, not guessed from OCR text. Text recognisers turn x² into "x?", "x°", "x2" or nothing. GLASS finds the small raised digits itself, reads each one enlarged, and shows "Read powers: x², (x + 3)²". If one can't be read, it re-reads the selection with the vision model or tells you which one to check.
+- **Exact maths:** solve, expand, factorise, simplify, work out, f(3) from a given f(x), simultaneous equations, inequalities, percentages and differentiation are computed by SymPy for each question (green **exact**). The AI explains the answer; it doesn't do the algebra.
+- **Think harder** re-solves with a reasoning model (`qwen3:4b` by default; Settings → AI models). It's slower, much better on hard multi-step questions, and can be switched on for every snip.
+- **Edit** fixes anything misread and solves again; **Read again (vision)** re-reads it with the vision model.
 
 **Questions on screen:** with screen reading on, GLASS notices a new worksheet or question on the shared screen and offers **Solve all** or one question at a time. Settings → Screen → *Solve questions as they appear* answers them without asking.
 

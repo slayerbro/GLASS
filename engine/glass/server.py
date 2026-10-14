@@ -124,7 +124,7 @@ class Server:
             return {"id": ans["id"]}
         if cmd == "snip.retry":
             # the student corrected what was read, or wants it re-read with the vision model
-            ans = await a.resolve_snip(m["id"], m.get("text"), bool(m.get("vision")))
+            ans = await a.resolve_snip(m["id"], m.get("text"), bool(m.get("vision")), bool(m.get("think")))
             return {"id": ans["id"]}
         if cmd == "screen.solve":
             e.note_help_request()

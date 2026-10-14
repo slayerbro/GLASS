@@ -153,6 +153,27 @@ Tests: 97/97 unit tests; harness scenarios incl. register, relevance, quotes (re
 
 Tests: 110 unit tests (Linux, CPU only), including splitting, references to parts, powers, topic statements, answer pairing, Fix-box routing, and a start → end → start lifecycle check. Also 5/5 macOS port tests. Not run: the GPU harness and live-app tests, which need the Windows laptop.
 
+## 2026-10-14 — feedback round 4: powers, and maths it can be trusted with
+
+**Powers were still wrong.** Tested with Tesseract on rendered worksheets, OCR returned "x?", "4a°", "2a”", "5?" and "23" for x², 4a³, 2a², 5² and 2³. Which junk appears isn't even consistent, and "4a³" once came back as "4a?". The text can't tell 2 from 3. `glass/superscript.py` now finds exponents in the image:
+- connected ink components per OCR line;
+- a glyph raised above the baseline, smaller than a full character, taller than wide, right after a base is an exponent;
+- each exponent is read enlarged and isolated: Tesseract single-character mode when installed, else the main OCR engine on a sheet of enlarged digits, else comparison with digits drawn in this computer's fonts;
+- it is written back as ^n using the OCR word boxes (replacing junk, a flattened digit, or nothing when dropped).
+
+Degrees, quotes, apostrophes, % and * are rejected by shape, and powers only attach to maths-like bases.
+
+Results:
+- **Tesseract, all 4 test sheets** (typeset, small, dark slide, Unicode glyphs): 24/24 powers right. The repo's own `worksheet.png` fixture: "x? - 5x" → "x^2 - 5x".
+- **Font comparison alone** (no OCR, fonts it hasn't seen): 0 wrong out of hundreds of digits from 9 to 24 px. It says "unsure" for some tiny ones rather than guess.
+- **An unreadable exponent** triggers an automatic vision re-read (when available) or a warning naming it.
+
+**Maths quality.** `plan_math` works out each question exactly with SymPy before the model answers: solve (incl. simultaneous equations and inequalities), expand, factorise, simplify, work out (incl. % of, fraction of), f(3) / f(x) = 12 from a stem's f(x), differentiate. It also turns OCR's "4a^3 x 2a^2" back into ×. Results are labelled per question; the model must match them, and the card shows them as **exact**. **Think harder** re-solves with a reasoning model (setting `reasoning_model`, default `qwen3:4b`, the thinking build already on the laptop), optionally for every snip. The answer model is reloaded in the background afterwards.
+
+Tests: 130 unit tests + 5 macOS port tests pass. These include powers read from rendered lines in four OCR failure modes, no false powers on degrees/quotes/%, and 13 exact-maths question types.
+
+Not verified: Windows OCR's own word boxes and digit reading (written to its API, not run). Also not run: the thinking model's latency on the laptop. If Windows OCR skips the enlarged digits, the font comparison still reads them.
+
 ## Known limitations (honest)
 
 - **Real classroom audio not tested.** All speech tests used Windows SAPI voices. Real teachers (accents, crosstalk, poor microphones, Meet compression) will reduce accuracy. Add name spellings in Settings → Student if GLASS mishears "Sanad".

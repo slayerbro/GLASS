@@ -682,3 +682,108 @@ def test_answer_lines_stay_separate_but_display_maths_is_kept():
 
     assert _paragraphs("**Answer:** 6\nSubtract 7") == "**Answer:** 6\n\nSubtract 7"
     assert _paragraphs("Working:\n$$\nx = 1\n$$\ndone") == "Working:\n\n$$\nx = 1\n$$\n\ndone"
+
+
+# ---------------------------------------------------------------- feedback round 4: powers read from the image, exact maths
+def _render_line(segments, size=28):
+    """Draw one worksheet line with real superscripts (small and raised, as slides and PDFs
+    print them) and return (BGRA image, OCR-style line with word boxes). The words carry
+    what an OCR engine typically returns for a superscript: junk, a flattened digit or nothing."""
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    f, fs = ImageFont.load_default(size=size), ImageFont.load_default(size=int(size * 0.62))
+    im = Image.new("RGB", (1100, size * 3), "white")
+    d = ImageDraw.Draw(im)
+    x, y, words = 20, size, []
+    for text, sup, ocr in segments:  # ocr: how the OCR engine reports this piece (None = same as text)
+        font = fs if sup else f
+        yy = y - int(size * 0.14) if sup else y
+        start = x
+        d.text((x, yy), text, font=font, fill="black")
+        x += d.textlength(text, font=font)
+        if ocr is None:
+            for wd in text.split():
+                wx = start + d.textlength(text[:text.index(wd)], font=font)
+                words.append({"text": wd, "x": wx, "y": y, "w": d.textlength(wd, font=font), "h": size})
+        elif ocr:  # glue onto the previous word, like an engine reading "x²" as "x?"
+            words[-1]["text"] += ocr
+            words[-1]["w"] = x - words[-1]["x"]
+    a = np.array(im)
+    img = np.dstack([a[:, :, ::-1], np.full(a.shape[:2], 255, np.uint8)])
+    line = {"text": " ".join(w["text"] for w in words), "x": 20, "y": y, "w": x - 20, "h": size, "words": words}
+    return img, line
+
+
+@pytest.mark.parametrize("segments,expected", [
+    ([("Solve x", 0, None), ("2", 1, "?"), (" + 5x + 6 = 0", 0, None)], "Solve x^2 + 5x + 6 = 0"),  # junk
+    ([("Expand (x + 3)", 0, None), ("2", 1, "")], "Expand (x + 3)^2"),  # dropped entirely
+    ([("Simplify 4a", 0, None), ("3", 1, "2"), (" × 2a", 0, None), ("2", 1, "°")], "Simplify 4a^3 × 2a^2"),  # wrong digit
+    ([("Work out 5", 0, None), ("2", 1, "2"), (" + 2", 0, None), ("3", 1, "3")], "Work out 5^2 + 2^3"),  # flattened
+])
+def test_powers_are_read_from_the_image(segments, expected):
+    from glass import superscript as S
+
+    img, line = _render_line(segments)
+    gray = img[:, :, :3].astype("float32").mean(axis=2)
+    exps = S.find_exponents(gray, [line])
+    for e in exps:  # no OCR engine here: the font comparison reads them
+        e.text = S.classify_digits(e.crop)
+    fixed, unreadable = S.apply([line], exps)
+    assert line["text"] == expected and not unreadable, (line["text"], fixed, unreadable)
+
+
+def test_degrees_quotes_and_apostrophes_are_not_powers():
+    from glass import superscript as S
+
+    for text in ["The angle is 30° and it's John's “book”.", "Use * to multiply: 10% of 20 = 2", "x - y = -3, ratio 2 : 3"]:
+        img, line = _render_line([(text, 0, None)])
+        gray = img[:, :, :3].astype("float32").mean(axis=2)
+        exps = S.find_exponents(gray, [line])
+        for e in exps:
+            e.text = S.classify_digits(e.crop)
+        before = line["text"]
+        S.apply([line], exps)
+        assert line["text"] == before, (before, line["text"])
+
+
+def test_unreadable_power_is_reported_not_guessed():
+    from glass import superscript as S
+
+    img, line = _render_line([("Solve x", 0, None), ("2", 1, "?"), (" + 1 = 5", 0, None)])
+    gray = img[:, :, :3].astype("float32").mean(axis=2)
+    exps = S.find_exponents(gray, [line])
+    assert len(exps) == 1
+    fixed, unreadable = S.apply([line], exps)  # nothing could read the digit
+    assert not fixed and unreadable == ["x"] and line["text"] == "Solve x? + 1 = 5"
+
+
+@pytest.mark.parametrize("question,stem,expected", [
+    ("Solve x^2 + 5x + 6 = 0", "", "x = -3, x = -2"),
+    ("Expand (x + 3)^2", "", "x^2 + 6x + 9"),
+    ("Simplify 4a^3 x 2a^2", "", "8a^5"),  # OCR read × as x
+    ("Work out 5^2 + 2^3", "", "33"),
+    ("Factorise x^2 - 9", "", "(x - 3)(x + 3)"),
+    ("Find f(3)", "f(x) = x^2 + 3", "12"),
+    ("Solve f(x) = 12", "f(x) = x^2 + 3", "x = -3, x = 3"),
+    ("Solve 3x + 2 > 11", "", "x > 3"),
+    ("Solve the simultaneous equations 2x + y = 7 and x - y = 2", "", "x = 3, y = 1"),
+    ("Work out 15% of 80", "", "12"),
+    ("Differentiate 3x^3 - 2x + 1", "", "9x^2 - 2"),
+    ("Expand and simplify (2x - 1)(x + 4)", "", "2x^2 + 7x - 4"),
+    ("Work out the value of 3^4 - 2 x 5", "", "71"),
+])
+def test_questions_are_worked_out_exactly(math, question, stem, expected):
+    from glass.mathsolve import plan_math, tidy_result
+
+    plan = plan_math(question, stem)
+    assert plan, question
+    r = math.run(plan[0])
+    assert r.ok and tidy_result(r.value) == expected, (plan, r)
+
+
+def test_no_exact_answer_for_wordy_questions():
+    from glass.mathsolve import plan_math
+
+    assert plan_math("Describe the trend shown in the graph") == []
+    assert plan_math("Factorise x2 - 9") == ["factor(x2 - 9)"]  # a flattened power is refused by SymPy, never mis-solved

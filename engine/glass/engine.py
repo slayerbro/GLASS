@@ -164,6 +164,9 @@ class Engine:
                 self._set_status("llm", "ready", model=model, ollama=ver, load_s=round(time.perf_counter() - t, 1))
             except Exception as e:
                 self._set_status("llm", "error", model=model, message=str(e))
+        rm = self.settings.get("reasoning_model")
+        if rm:
+            self._set_status("reasoning", "ready" if await self.llm.has_model(rm) else "missing", model=rm)
         vm = self.answers.vision_model
         if not self.settings.profile().get("vision_enabled", True):
             self._set_status("vision", "off", model=vm, message="Diagram reading is off on this computer (CPU only)")
@@ -171,7 +174,8 @@ class Engine:
             self._set_status("vision", "ready" if await self.llm.has_model(vm) else "missing", model=vm)
 
     async def pull_model(self, name: str) -> None:
-        key = "vision" if name == self.answers.vision_model else "llm"
+        key = "vision" if name == self.answers.vision_model else \
+            "reasoning" if name == self.settings.get("reasoning_model") and name != self.answers.text_model else "llm"
 
         def prog(j: dict) -> None:
             total, done = j.get("total") or 0, j.get("completed") or 0
@@ -768,7 +772,8 @@ class Engine:
             return ans
         self._last_help_t = time.time()
         self._set_mode("confusion")
-        return await self.answers.solve_snip(png, text, use_vision)
+        powers = dict(self.screen.last_snip_powers)
+        return await self.answers.solve_snip(png, text, use_vision, powers=powers)
 
     # ------------------------------------------------------------------ thermal protection
     def _on_thermal_thread(self, level: str, info: dict) -> None:

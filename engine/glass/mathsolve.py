@@ -373,3 +373,125 @@ def word_to_int(w: str) -> int | None:
     if len(parts) == 2 and parts[0] in NUM_WORDS and parts[1] in NUM_WORDS:
         return NUM_WORDS[parts[0]] + NUM_WORDS[parts[1]]
     return None
+
+
+# --------------------------------------------------------------------------- whole questions
+# A 4B language model is not reliable at algebra. For the common question types the exact
+# answer is computed here and handed to the model, which only explains it.
+_VERBS = [
+    ("expand", re.compile(r"\b(expand( and simplify)?|multiply out)\b", re.I)),
+    ("factor", re.compile(r"\b(factori[sz]e( fully| completely)?|factor)\b", re.I)),
+    ("diff", re.compile(r"\b(differentiate|find\s+(?:dy\s*/\s*dx|the derivative of))\b", re.I)),
+    ("simplify", re.compile(r"\bsimplify( fully)?\b", re.I)),
+    ("solve", re.compile(r"\b(solve|find the value of x|find x)\b", re.I)),
+    ("eval", re.compile(r"\b(work out|calculate|evaluate|find the value of|what is|find)\b", re.I)),
+]
+_FUNC_DEF = re.compile(r"\b([fgh])\(\s*([a-z])\s*\)\s*=\s*([^\n,;]+)")
+_INEQ = re.compile(r"(<=|>=|<|>)")
+
+
+def _left_span(s: str) -> str:
+    """The maths just before a position: "Solve 3x + 2" -> "3x + 2"."""
+    toks = _TOK.findall(s)
+    i = len(toks)
+    while i > 0 and _mathy(toks[i - 1]):
+        i -= 1
+    span = "".join(toks[i:]).strip()
+    return span if span.count("(") == span.count(")") else ""
+
+
+def _span(s: str) -> str:
+    """The maths right after a command word: "Expand (x + 3)^2 giving…" -> "(x + 3)^2"."""
+    s = re.sub(r"^[\s:,-]+", "", s)
+    toks = _TOK.findall(s)
+    out = []
+    for t in toks:
+        if t in ",;:" or (t.isalpha() and not _mathy(t) and t.lower() not in {"of"}):
+            break
+        out.append(t)
+    span = "".join(out).strip().rstrip(".=+-*/^ ")
+    if span.count("(") != span.count(")"):
+        return ""
+    return span
+
+
+def _times_sign(expr: str) -> str:
+    """OCR reads × as the letter x: "4a^3 x 2a^2" -> "4a^3 * 2a^2" (only when x is not a variable there)."""
+    if re.search(r"\s[x×]\s", expr) and not re.search(r"\dx|x\^|\(x|x\)", expr) and \
+            (re.search(r"[a-wyz]", expr) or not re.search(r"[a-z]", expr.replace(" x ", " "))):
+        return re.sub(r"\s[x×]\s", " * ", expr)
+    return expr
+
+
+def plan_math(question: str, stem: str = "") -> list[str]:
+    """SymPy expressions that answer a worksheet question exactly, or []."""
+    q = normalise(question)
+    q = re.sub(r"(\d+(?:\.\d+)?)\s*%\s*of\b", r"(\1/100)*", q)  # 15% of 80
+    q = re.sub(r"(\d)\s+of\s+(?=\d)", r"\1*", q)  # 3/4 of 20
+    # f(x) defined in the stem (or the question): use it
+    for m in _FUNC_DEF.finditer(normalise(stem) + "\n" + q):
+        name, var, body = m.group(1), m.group(2), m.group(3).strip().rstrip(".")
+        if not body:
+            continue
+        q = q.replace(m.group(0), "")
+        q = re.sub(rf"\b{name}\(\s*{var}\s*\)", f"({body})", q)
+        q = re.sub(rf"\b{name}\(\s*(-?\d+(?:\.\d+)?)\s*\)",
+                   lambda n: "(" + re.sub(rf"(?<![A-Za-z]){var}(?![A-Za-z])", f"({n.group(1)})", body) + ")", q)
+    verb = next((v for v, rx in _VERBS if rx.search(q)), None)
+    eqs = find_problems(q)
+    if verb in ("solve", None) or eqs:
+        if len(eqs) >= 2:  # simultaneous equations
+            letters = sorted(set(re.findall(r"(?<![a-z])([a-z])(?![a-z])", " ".join(eqs).lower())))
+            if 2 <= len(letters) <= 3 and len(eqs) == len(letters):
+                pairs = [e.split("=", 1) for e in eqs]
+                return [f"solve([{', '.join(f'Eq({a.strip()}, {b.strip()})' for a, b in pairs)}], [{', '.join(letters)}])"]
+        if eqs:
+            return eqs[:2]
+        if verb == "solve":
+            m = _INEQ.search(q)
+            if m:
+                lhs, rhs = _left_span(q[:m.start()]), _span(q[m.end():])
+                if lhs and rhs and re.search(r"[a-z]", lhs + rhs):
+                    return [f"reduce_inequalities({lhs} {m.group(1)} {rhs})"]
+    if verb is None:
+        return []
+    m = _VERBS[[v for v, _ in _VERBS].index(verb)][1].search(q)
+    rest = re.sub(r"^\s*(?:the\s+)?(?:exact\s+)?(?:value\s+of|answer\s+to)?\s*", "", q[m.end():], flags=re.I)
+    span = _times_sign(_span(rest))
+    if not span or not re.search(r"\d|[a-z]", span):
+        return []
+    if verb == "expand":
+        return [f"expand({span})"]
+    if verb == "factor":
+        return [f"factor({span})"]
+    if verb == "simplify":
+        return [f"simplify({span})"]
+    if verb == "diff":
+        v = "x" if "x" in span else (re.findall(r"(?<![a-z])([a-z])(?![a-z])", span) or ["x"])[0]
+        return [f"diff({span}, {v})"]
+    if verb == "eval" and not re.search(r"(?<![a-z])[a-z](?![a-z])", span.replace("pi", "").replace("sqrt", "")):
+        return [span]
+    return []
+
+
+def _closing(s: str, i: int) -> int:
+    depth = 0
+    for j in range(i, len(s)):
+        depth += {"(": 1, ")": -1}.get(s[j], 0)
+        if depth == 0:
+            return j
+    return -1
+
+
+def tidy_result(v: str) -> str:
+    """SymPy's output as a student writes it: "(3 < x) & (x < oo)" -> "x > 3", "6*x" -> "6x"."""
+    v = re.sub(r"\s*&\s*\((?:-oo < \w|\w < oo)\)|\((?:-oo < \w|\w < oo)\)\s*&\s*", "", v)
+    v = v.strip()
+    if v.startswith("(") and _closing(v, 0) == len(v) - 1:  # one bracket around everything
+        v = v[1:-1]
+    m = re.fullmatch(r"(-?[\d/.]+)\s*(<=|<)\s*([a-z])", v)
+    if m:
+        v = f"{m.group(3)} {'>=' if m.group(2) == '<=' else '>'} {m.group(1)}"
+    v = re.sub(r"(\d)\*(?=[a-z(])", r"\1", v)
+    v = re.sub(r"\)\*\(", ")(", v)
+    return v

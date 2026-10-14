@@ -165,7 +165,10 @@ The QUESTIONS list gives each question with its label in square brackets. Answer
 
 Rules:
 - Answer the question exactly as written in QUESTIONS. Do not change any number, sign or power in it; work from the question text, not from memory of similar questions.
-- Use every VERIFIED RESULT exactly (it was computed by SymPy); never redo that arithmetic yourself.
+- A VERIFIED RESULT labelled [2(a)] is the exact answer to question 2(a), computed by SymPy: your Answer line for that
+  question must give exactly that value, and the working must lead to it. Never redo that arithmetic differently.
+- For a question without a VERIFIED RESULT, work it out step by step in the working lines and check it (substitute the
+  answer back in, or estimate) before writing the Answer line.
 - The text came from OCR: a power may have been flattened, so "x2" next to maths almost always means x^2. If you had to assume something like that, say so in the working.
 - For a diagram question, name the method (e.g. Pythagoras) in the working.
 - Never invent questions that are not in the list. Write maths in plain text or LaTeX ($...$).
