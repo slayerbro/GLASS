@@ -189,6 +189,18 @@ Fixed:
 
 Tests: 137 unit tests, including the slide's exact OCR text, + 5 macOS port tests.
 
+## 2026-10-14 — feedback round 6: "tell me something smart I can say"
+
+Typed requests all went through the teacher-question pipeline. That pipeline makes the model answer one literal question in a single spoken sentence and looks at only the last 90 s of speech, so "tell me something smart I can say" confused it. Requests are now recognised first:
+- **something to say / contribute / participate** → three options grounded in the latest teacher speech (4 min), the slide, the topic and the teacher's last question. They mix building on the teacher's point, a precise key term, and a thoughtful question. Each says why it's strong.
+- **a question I can ask** → three good questions for the teacher.
+- **what did I miss** → catch-up.
+- **what are we talking about** → explanation of what's happening now.
+
+Ordinary typed questions use 3 minutes of speech (was 90 s) plus "what the teacher is doing right now". They are told to interpret the question within the current discussion.
+
+Tests: 152 unit tests (incl. 14 request-recognition cases, and a check that the speech, slide and topic reach the model) + 5 macOS port tests.
+
 ## Known limitations (honest)
 
 - **Real classroom audio not tested.** All speech tests used Windows SAPI voices. Real teachers (accents, crosstalk, poor microphones, Meet compression) will reduce accuracy. Add name spellings in Settings → Student if GLASS mishears "Sanad".

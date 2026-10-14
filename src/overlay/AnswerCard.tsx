@@ -39,7 +39,7 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
 
   // long-form cards (explain / catch-up / tutor)
   if (a.mode !== 'question' && a.mode !== 'ask') {
-    const title = a.mode === 'tutor' ? a.question : TITLES[a.mode] || a.question;
+    const title = a.mode === 'tutor' ? a.question : a.title || TITLES[a.mode] || a.question;
     return (
       <div className="px-4 pt-3 pb-3">
         <div className="flex items-center gap-2 mb-1.5">
@@ -49,7 +49,7 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
           <span className="ml-auto"><Latency a={a} /></span>
         </div>
         {a.status === 'error' ? <ErrorLine a={a} /> :
-          !a.body ? <Thinking label={a.status === 'reading' ? 'Reading your selection…' : 'Thinking…'} /> :
+          !a.body ? <Thinking label={a.mode === 'contribute' ? 'Looking at what the class is discussing…' : 'Thinking…'} /> :
             <div className="max-h-[380px] scroll pr-1 -mr-1"><Markdown text={a.body} className={streaming ? 'caret' : ''} /></div>}
         <Quotes a={a} />
       </div>

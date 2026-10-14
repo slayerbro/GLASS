@@ -835,3 +835,44 @@ def test_more_function_questions(math, question, stem, expected):
 
     plan = plan_math(question, stem)
     assert plan and tidy_result(math.run(plan[0]).value) == expected, plan
+
+
+# ---------------------------------------------------------------- feedback round 6: requests that aren't lesson questions
+@pytest.mark.parametrize("text,intent", [
+    ("tell me something smart i can say", "say"),
+    ("give me something to say", "say"),
+    ("what can i add", "say"),
+    ("help me participate", "say"),
+    ("a smart point about this", "say"),
+    ("give me a good question i can ask", "ask_teacher"),
+    ("what should i ask", "ask_teacher"),
+    ("what did i miss", "catchup"),
+    ("what are we talking about", "explain"),
+    ("what is going on", "explain"),
+    ("what is osmosis", None),
+    ("why does the reaction speed up", None),
+    ("answer question 2b", None),
+    ("what did the teacher say about catalysts", None),
+])
+def test_student_requests_are_recognised(text, intent):
+    from glass.answer import student_intent
+
+    assert student_intent(text) == intent
+
+
+def test_something_smart_to_say_uses_what_is_being_discussed(monkeypatch):
+    import time
+    from glass.memory import ScreenObs, Utterance
+
+    eng, calls = _answer_engine(monkeypatch)
+    now = time.time()
+    eng.mem.topic = "rates of reaction"
+    eng.mem.add_utterance(Utterance("u1", "class", "Increasing the temperature gives particles more kinetic energy.", now - 200, now - 195))
+    eng.mem.add_utterance(Utterance("u2", "class", "So more collisions have energy above the activation energy.", now - 20, now - 15))
+    eng.mem.add_screen(ScreenObs(now, "Collision theory: frequency and energy of collisions", {}, []))
+    ans = asyncio.run(eng.ask("tell me something smart i can say"))
+    assert ans["mode"] == "contribute" and ans["title"] == "Things you could say"
+    user = next(c[1] for c in calls if c[0] == "md")
+    # the last few minutes of speech (not just 90 s), the slide and the topic all reach the model
+    assert "kinetic energy" in user and "activation energy" in user and "Collision theory" in user and "rates of reaction" in user
+    assert not any(c[0] == "run" for c in calls)  # not treated as a literal question to answer

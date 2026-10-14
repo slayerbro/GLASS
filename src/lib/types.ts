@@ -33,7 +33,7 @@ export interface NameHit {
 
 export interface Answer {
   id: string;
-  mode: 'question' | 'ask' | 'explain' | 'catchup' | 'tutor' | 'snip';
+  mode: 'question' | 'ask' | 'explain' | 'catchup' | 'tutor' | 'snip' | 'contribute';
   t: number;
   status: 'thinking' | 'reading' | 'streaming' | 'done' | 'error' | 'superseded';
   question: string;

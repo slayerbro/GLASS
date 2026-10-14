@@ -239,7 +239,7 @@ class Engine:
         self.session = None
         # answers still being written belong to the lesson that just ended
         self.sched.cancel_where(lambda key, p: key.split(":", 1)[0] in (
-            "answer", "verify", "snip", "snipv", "ask", "question", "explain", "catchup", "tutor", "state", "task"))
+            "answer", "verify", "snip", "snipv", "ask", "question", "explain", "catchup", "tutor", "contribute", "state", "task"))
         # The final notes pass keeps the ended lesson's memory and notes to itself; the
         # engine gets fresh ones at once, so nothing from this lesson (topic, subject,
         # late background results) can leak into the next one.

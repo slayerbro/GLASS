@@ -70,7 +70,10 @@ How the Mac version differs:
 5. Not sure what the teacher means? Press **Ctrl+Alt+Space** and type two or three words (`natural selection`, `question 4`, `the graph`). The answer is redone with that context.
 
 **The text box has two tabs** (press Tab to switch):
-- **Ask:** any new question about the lesson. *answer question 2b* solves that question from the screen or your last snip.
+- **Ask:** any new question about the lesson (it looks at the last few minutes and the slide, so "what does that mean?" works). *answer question 2b* solves that question from the screen or your last snip.
+  - *tell me something smart I can say* / *what can I add* → three things you could say right now, built on what the teacher just said, each with why it's a strong point.
+  - *a good question I can ask* → thoughtful questions for the teacher about the current point.
+  - *what did I miss* → catch-up; *what are we talking about* → explanation of what's happening now.
 - **Fix:** the answer on screen. Add context ("natural selection", "question 4") or tell it what to do: *answer it*, *shorter*, *simpler*, *more detail*, *quotes*, *that's wrong*.
 - **Tell it the topic** in either tab: *the topic is concentration*, *we're doing moles*, *this lesson is about natural selection (biology)*. The topic sticks for the whole lesson, and the answer on screen is redone with it.
 

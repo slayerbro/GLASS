@@ -140,6 +140,23 @@ def pair_parts(questions: list[dict], body: str) -> list[dict]:
     return out
 
 
+# What the student wants when they type something that is not a lesson question
+STUDENT_INTENTS = [
+    ("ask_teacher", re.compile(r"\b(good|smart|clever|interesting|deep|thoughtful)?\s*questions?\s+(i|to|that i)\s+(can|could|should|might)?\s*ask\b|"
+                               r"\bwhat (can|could|should) i ask\b|\bsomething (to|i can|i could) ask\b", re.I)),
+    ("say", re.compile(r"\b(something|anything|a point|a comment|things?|stuff)\b.{0,30}\b(say|add|contribute|mention|comment|share)\b|"
+                       r"\bwhat (can|could|should|do) i (say|add|contribute|share)\b|\b(help me )?(participate|contribute|join in|"
+                       r"sound smart|look smart|impress)\b|\b(smart|clever|insightful|intelligent|good) (point|comment|thing|answer)\b", re.I)),
+    ("catchup", re.compile(r"\bwhat did i miss\b|\bcatch me up\b|\bi (lost focus|zoned out|wasn'?t (listening|paying attention))\b", re.I)),
+    ("explain", re.compile(r"\bwhat (are we|is (he|she|the teacher|sir|miss)|'?s (he|she)) (talking|on|doing|explaining)( about)?\b|"
+                           r"\bwhat('s| is) (going on|happening|this (lesson )?about)\b|\bexplain what('s| is) (happening|going on)\b", re.I)),
+]
+
+
+def student_intent(text: str) -> str | None:
+    return next((name for name, rx in STUDENT_INTENTS if rx.search(text)), None)
+
+
 def parse_commands(text: str) -> tuple[list[str], str]:
     """-> (commands, leftover context). "answer it, it's about natural selection" ->
     (["answer"], "it's about natural selection")."""
@@ -234,10 +251,13 @@ class AnswerEngine:
         return ans
 
     def _context_block(self, ans: dict, question: str, extra: list[str], ref_text: str | None,
-                       verified: list[tuple[str, str]], max_chars: int, for_answer: bool = False) -> str:
+                       verified: list[tuple[str, str]], max_chars: int, for_answer: bool = False,
+                       recent_s: float = 90) -> str:
         parts = [self._subject_line()]
         if self.mem.lesson_summary:
             parts.append("LESSON SO FAR: " + self.mem.lesson_summary[-700:])
+        if self.mem.summary:
+            parts.append("WHAT THE TEACHER IS DOING RIGHT NOW: " + self.mem.summary)
         if self.mem.formulas:
             parts.append("FORMULAS USED THIS LESSON: " + "; ".join(self.mem.formulas[-8:]))
         if self.mem.current_task:
@@ -261,7 +281,7 @@ class AnswerEngine:
         for expr, val in verified:
             hint = "  (already computed: write CALC: - and use this)" if for_answer else ""
             parts.append(f"VERIFIED RESULT (computed exactly by SymPy): {expr}  =>  {val}{hint}")
-        recent = self.mem.recent(seconds=90, max_chars=int(max_chars * 0.45))
+        recent = self.mem.recent(seconds=recent_s, max_chars=int(max_chars * 0.45))
         if recent:
             parts.append("RECENT SPEECH (oldest first, automatic transcription):\n" + recent)
             ans["sources"].append("transcript")
@@ -400,6 +420,9 @@ class AnswerEngine:
         answer ("answer it", "shorter", "give quotes", "that's wrong"), a request for an
         on-screen question ("answer question 2b"), or what the lesson is about."""
         text = text.strip()
+        routed = await self._route_intent(text)
+        if routed is not None:
+            return routed
         topic, subject = parse_topic(text)
         if topic or subject:
             return await self.set_topic(text, topic, subject)
@@ -530,6 +553,9 @@ class AnswerEngine:
 
     async def ask(self, text: str) -> dict:
         """Free request typed by the student (topic, question, formula, attempt)."""
+        routed = await self._route_intent(text)
+        if routed is not None:
+            return routed
         topic, subject = parse_topic(text)
         if topic or subject:
             return await self.set_topic(text, topic, subject)
@@ -544,15 +570,51 @@ class AnswerEngine:
             if a["mode"] == "question" and a["say"] and time.time() - a["t"] < 180:
                 last = a
                 break
-        extra = [f'The student typed: "{text}". Interpret it with the lesson context: it may be a topic or term to '
-                 f'explain, a question to answer, a correction of your last answer, or their own attempt to check.']
+        extra = [f'The student typed: "{text}". Answer it about THIS lesson as it is right now: use the latest speech, '
+                 f'the slide and the topic to work out what it refers to. It may be a term to explain, a question to answer, '
+                 f'a correction of your last answer, or their own attempt to check.']
         if last:
             extra.append(f'Your last suggestion was for "{last["resolved"] or last["question"]}": "{last["say"]}"')
-        await self._run_answer(ans, text, extract_reference(text), DIRECT, extra=extra)
+        await self._run_answer(ans, text, extract_reference(text), DIRECT, extra=extra, recent_s=180)
+        return ans
+
+    async def _route_intent(self, text: str) -> dict | None:
+        intent = student_intent(text)
+        if intent in ("say", "ask_teacher"):
+            return await self.contribute(text, intent)
+        if intent == "catchup":
+            return await self.catchup(3)
+        if intent == "explain":
+            return await self.explain_now()
+        return None
+
+    async def contribute(self, text: str, intent: str = "say") -> dict:
+        """ "Tell me something smart I can say" / "a good question to ask": options grounded in
+        what is being discussed right now, not a literal answer to the request."""
+        asking = intent == "ask_teacher"
+        ans = self._new("contribute", question=text, title="Questions you could ask" if asking else "Things you could say")
+        self._push(ans, force=True)
+        ctx = self._context_block(ans, text, [], None, [], 4500, recent_s=240)
+        aq = self.mem.active_question
+        last = self.answers.get((aq or {}).get("answer_id", "")) if aq and time.time() - aq["t"] < 240 else None
+        if last and last.get("say"):
+            ctx += f'\n\nTHE TEACHER JUST ASKED: "{aq["text"]}" (a good answer: "{last["say"]}")'
+        system = P.SYSTEM_CONTRIBUTE.format(
+            name=self.name, request=text, n=3, verb="ask the teacher" if asking else "say",
+            form="a question to the teacher, 1 sentence" if asking else "what to say, in first person, 1-2 sentences",
+            kinds=("questions that show real understanding: why/how something works, what happens in an edge case, "
+                   "how it links to an earlier idea or the real world — never something already answered" if asking else
+                   "mix (1) building on the teacher's latest point with a link, consequence or example, (2) a precise "
+                   "key term or fact that fits right now, (3) a thoughtful question to the teacher"),
+            guide=P.guide(self.mem.subject_id))
+        await self._stream_markdown(ans, system, ctx + "\n\nWrite the options now.", DIRECT, num_predict=450)
+        if ans.get("body"):
+            ans["body"] = re.sub(r"(?<!\n)\n(?=\*\*\d)", "\n\n", ans["body"])
+            self._push(ans, force=True)
         return ans
 
     async def _run_answer(self, ans: dict, question: str, ref: dict, prio: int, extra: list[str],
-                          instructions: list[str] | None = None) -> None:
+                          instructions: list[str] | None = None, recent_s: float = 90) -> None:
         t0 = time.perf_counter()
         profile = self.settings.profile()
         ref_text = self.mem.resolve_reference(ref) if ref else None
@@ -576,7 +638,8 @@ class AnswerEngine:
             ans["latency"]["verified_ms"] = round((time.perf_counter() - t0) * 1000)
             self._push(ans, force=True)
 
-        context = self._context_block(ans, question, extra, ref_text, verified, profile["context_chars"], for_answer=True)
+        context = self._context_block(ans, question, extra, ref_text, verified, profile["context_chars"], for_answer=True,
+                                      recent_s=recent_s)
         directed = ans.get("directed")
         if ans["mode"] == "question":
             qline = f"QUESTION TO ANSWER: {question}"
