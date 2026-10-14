@@ -278,7 +278,7 @@ def test_snip_crops_frozen_frame(monkeypatch):
     frame[150:160, 250:550, :3] = 0
     svc._frozen = (frame, {"index": 1, "left": 0, "top": 0, "w": 1920, "h": 1200}, time.time())
 
-    async def fake_read(img, lang="en-US"):
+    async def fake_read(img, lang="en-US", **kw):
         fake_read.shape = img.shape
         return []
 
@@ -448,3 +448,237 @@ def test_thermal_ignores_stray_gpu_flag(monkeypatch):
     for _ in range(3):
         g.sample(10)
     assert g.level == "ok"
+
+
+# ---------------------------------------------------------------- feedback round 3: snips, references, topics, lesson reset
+WORKSHEET = """Solve these equations.
+1. 2x + 7 = 19
+2 f(x) = x² + 3
+(a) Find f(3)
+(b) Solve f(x) = 12 (2 marks)
+.............
+(Total for Question 2 is 4 marks)
+3(a) Expand 3(x+2)
+(b) Factorise x2 - 9"""
+
+
+def test_worksheet_splits_into_separate_questions():
+    from glass.mathsolve import normalise
+    from glass.memory import split_questions
+
+    qs = split_questions(normalise(WORKSHEET))
+    assert [q["label"] for q in qs] == ["1", "2(a)", "2(b)", "3(a)", "3(b)"]
+    assert qs[1]["text"] == "Find f(3)" and "f(x) = x^2 + 3" in qs[1]["stem"]  # f(3) is not a mark
+    assert qs[2]["text"] == "Solve f(x) = 12"  # "(2 marks)" and answer lines removed
+    assert split_questions("Find the gradient of y = 3x + 4") == [{"label": "1", "text": "Find the gradient of y = 3x + 4"}]
+
+
+def test_reference_to_a_part_includes_its_stem():
+    import time
+    from glass.mathsolve import normalise
+    from glass.memory import LessonMemory, ScreenObs, parse_numbered_items
+
+    m = LessonMemory()
+    t = normalise(WORKSHEET)
+    m.add_screen(ScreenObs(time.time(), t, parse_numbered_items(t)))
+    r = m.resolve_reference(extract_reference("answer question 2b"))
+    assert r.startswith("2(b)") and "x^2 + 3" in r and "Solve f(x) = 12" in r and "Find f(3)" not in r
+
+
+def test_superscripts_and_flattened_powers():
+    from glass.mathsolve import flat_powers, normalise
+    from glass.screen import fix_power_marks
+
+    assert normalise("x² + y³ - z⁻¹ + 2¹⁰") == "x^2 + y^3 - z^(-1) + 2^10"
+    assert flat_powers("3. Factorise x2 - 9\nH2O and page 45") == ["x2"]  # only maths lines, lowercase
+    assert fix_power_marks("x? + 5x + 6 = 0") == "x^2 + 5x + 6 = 0"
+    assert fix_power_marks("Is y = 3 or what is x?") == "Is y = 3 or what is x?"  # a real question mark
+
+
+@pytest.mark.parametrize("text,topic,subject", [
+    ("the topic is concentration", "concentration", None),
+    ("topic is concentration in chemistry", "concentration", "chemistry"),
+    ("we're doing moles", "moles", None),
+    ("this lesson is about natural selection", "natural selection", None),
+    ("the lesson is chemistry", None, "chemistry"),
+    ("it's about natural selection", None, None),  # context for the answer, not the lesson
+    ("what is the topic?", None, None),
+])
+def test_topic_statements(text, topic, subject):
+    from glass.answer import parse_topic
+
+    assert parse_topic(text) == (topic, subject)
+
+
+def test_snip_answers_pair_with_their_questions():
+    from glass.answer import pair_parts
+
+    qs = [{"label": "1", "text": "a"}, {"label": "2(a)", "text": "b"}, {"label": "2(b)", "text": "c"}]
+    body = "### 1\n**Answer:** x = 6\nSubtract 7\nDivide by 2\n\n### 2a\n**Answer:** 12\n\n**2(b)**\n**12**\n"
+    parts = pair_parts(qs, body)
+    assert [p["label"] for p in parts] == ["1", "2(a)", "2(b)"]
+    assert parts[0]["answer"] == "**Answer:** x = 6\n\nSubtract 7\n\nDivide by 2"  # each line stays its own line
+    assert parts[2]["answer"] == "**12**"  # a bold number is not a question heading
+    assert pair_parts([{"label": "1", "text": "q"}], "It shows a cell.")[0]["answer"] == "It shows a cell."
+
+
+class _FakeSettings:
+    def __init__(self):
+        self.d = {"student_name": "Sanad", "subjects": [{"id": "chemistry", "name": "Chemistry", "board": ""}]}
+
+    def get(self, k, default=None):
+        return self.d.get(k, default)
+
+    def profile(self):
+        return {"context_chars": 3000, "vision_enabled": True}
+
+    def subject_by_id(self, sid):
+        return next((s for s in self.d["subjects"] if s["id"] == sid), None)
+
+
+def _answer_engine(monkeypatch):
+    from glass.answer import AnswerEngine
+    from glass.memory import LessonMemory
+
+    eng = AnswerEngine(None, Scheduler(), None, LessonMemory(), _FakeSettings(), None, lambda *a, **k: None)
+    calls = []
+
+    async def fake_run(ans, question, ref, prio, extra, instructions=None):
+        calls.append(("run", question, ref, list(extra), instructions))
+        ans["status"] = "done"
+
+    async def fake_md(ans, system, user, prio, **kw):
+        calls.append(("md", user))
+        ans["body"] = "### 2(b)\n**Answer:** x = 3\nx^2 = 9"
+        ans["status"] = "done"
+
+    async def fake_solve(exprs, limit=4):
+        return []
+
+    monkeypatch.setattr(eng, "_run_answer", fake_run)
+    monkeypatch.setattr(eng, "_stream_markdown", fake_md)
+    monkeypatch.setattr(eng, "_solve", fake_solve)
+    return eng, calls
+
+
+def test_answer_question_2b_is_not_swallowed_by_the_fix_box(monkeypatch):
+    import time
+    from glass.mathsolve import normalise
+    from glass.memory import ScreenObs, parse_numbered_items
+
+    eng, calls = _answer_engine(monkeypatch)
+    # a class question is on the overlay, so the box is on "Fix"
+    old = eng._new("question", question="What is a catalyst?", status="done", say="It speeds up a reaction.", qid="q_1")
+    eng.mem.active_question = {"id": "q_1", "t": time.time(), "text": "What is a catalyst?", "answer_id": old["id"]}
+    t = normalise(WORKSHEET)
+    eng.mem.add_screen(ScreenObs(time.time(), t, parse_numbered_items(t)))
+    ans = asyncio.run(eng.clarify("answer question 2b"))
+    assert ans["mode"] == "snip" and ans["title"] == "Question 2(b)"
+    assert [q["label"] for q in ans["questions"]] == ["2(b)"] and "Solve f(x) = 12" in ans["questions"][0]["text"]
+    assert ans["parts"][0]["answer"].startswith("**Answer:** x = 3")
+    assert not any(c[0] == "run" for c in calls)  # did NOT re-answer the catalyst question
+
+
+def test_question_reference_without_screen_says_how_to_fix_it(monkeypatch):
+    eng, calls = _answer_engine(monkeypatch)
+    ans = asyncio.run(eng.ask("answer question 2b"))
+    assert ans["status"] == "error" and "Snip" in ans["error"] and not calls
+
+
+def test_topic_statement_sticks_and_redoes_the_answer(monkeypatch):
+    import time
+
+    eng, calls = _answer_engine(monkeypatch)
+    old = eng._new("question", question="Why does it change?", status="done", say="Because of heat.", qid="q_2")
+    eng.mem.active_question = {"id": "q_2", "t": time.time(), "text": "Why does it change?", "answer_id": old["id"]}
+    asyncio.run(eng.clarify("the topic is concentration"))
+    assert eng.mem.topic == "concentration" and eng.mem.topic_locked
+    assert calls and calls[-1][0] == "run" and "the lesson topic is concentration" in calls[-1][3]
+    assert "concentration" in eng._subject_line() and "said this is the topic" in eng._subject_line()
+
+
+def test_fix_box_with_nothing_to_fix_sets_the_topic(monkeypatch):
+    eng, calls = _answer_engine(monkeypatch)
+    ans = asyncio.run(eng.clarify("concentration"))
+    assert eng.mem.topic == "concentration" and ans["kind"] == "note" and "concentration" in ans["say"] and not calls
+
+
+def test_ending_a_lesson_clears_it_and_the_next_one_starts_fresh(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    sys.modules.setdefault("onnxruntime", types.ModuleType("onnxruntime"))  # not needed: audio is not started
+    import glass.engine as E
+    from glass.bus import bus
+    from glass.config import Settings
+    from glass.db import DB
+    from glass.intel import LessonIntel
+    from glass.memory import Utterance
+
+    events = []
+    finals = []
+
+    async def fake_notes(self, final=False):
+        finals.append((self.mem.topic, self.session_id))
+
+    monkeypatch.setattr(E, "Settings", lambda: Settings(tmp_path / "settings.json"))
+    monkeypatch.setattr(E, "DB", lambda path: DB(tmp_path / "glass.db"))
+    monkeypatch.setattr(LessonIntel, "update_notes", fake_notes)
+
+    async def run():
+        bus.bind(asyncio.get_running_loop())
+        bus.subscribe("*", lambda e: events.append(e))
+        eng = E.Engine()
+        monkeypatch.setattr(eng, "_start_audio", lambda capture=True: None)
+        monkeypatch.setattr(eng, "_stop_audio", lambda: None)
+        eng.settings.update({"consent_acknowledged": True})
+        s1 = await eng.start_session("chemistry", capture=False)
+        eng.set_topic("concentration")
+        eng.mem.add_utterance(Utterance("u1", "class", "Concentration is moles per volume.", 0, 1))
+        eng.answers._new("question", question="What is concentration?")
+        await eng.stop_session()
+        await asyncio.sleep(0.05)
+        assert eng.mem.topic == "" and eng.mem.subject_id is None and not eng.answers.answers
+        assert finals == [("concentration", s1["id"])]  # the final notes pass kept the ended lesson's memory
+        events.clear()
+        s2 = await eng.start_session(None, capture=False)
+        await asyncio.sleep(0.05)
+        state = [e for e in events if e["type"] == "lesson.state"][-1]["state"]
+        assert state["subject_id"] is None and state["topic"] == "" and not state["topic_locked"]
+        assert any(e["type"] == "lesson.reset" for e in events) and s2["id"] != s1["id"]
+        await eng.stop_session()
+        eng.math.close()
+        eng.db.close()
+
+    asyncio.run(run())
+
+
+def test_new_screen_questions_are_offered_once(monkeypatch):
+    import time
+    import types
+    from glass.mathsolve import find_problems, normalise
+    from glass.memory import ScreenObs, parse_numbered_items
+    import sys
+
+    sys.modules.setdefault("onnxruntime", types.ModuleType("onnxruntime"))
+    import glass.engine as E
+
+    sent = []
+    monkeypatch.setattr(E.bus, "emit", lambda type_, **p: sent.append((type_, p)))
+    eng = E.Engine.__new__(E.Engine)
+    eng.session, eng.paused = {"id": "s"}, False
+    eng._screen_seen, eng._screen_offer = set(), None
+    eng.settings = types.SimpleNamespace(get=lambda k, d=None: False)
+    t = normalise(WORKSHEET)
+    obs = ScreenObs(time.time(), t, parse_numbered_items(t), find_problems(t))
+    eng._offer_screen_questions(obs)
+    eng._offer_screen_questions(obs)  # the same worksheet read again: no second offer
+    offers = [p for k, p in sent if k == "screen.questions"]
+    assert len(offers) == 1 and [q["label"] for q in offers[0]["questions"]] == ["1", "2(a)", "2(b)", "3(a)", "3(b)"]
+
+
+def test_answer_lines_stay_separate_but_display_maths_is_kept():
+    from glass.answer import _paragraphs
+
+    assert _paragraphs("**Answer:** 6\nSubtract 7") == "**Answer:** 6\n\nSubtract 7"
+    assert _paragraphs("Working:\n$$\nx = 1\n$$\ndone") == "Working:\n\n$$\nx = 1\n$$\n\ndone"

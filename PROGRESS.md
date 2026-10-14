@@ -140,6 +140,19 @@ Tests:
 
 Tests: 97/97 unit tests; harness scenarios incl. register, relevance, quotes (real model).
 
+## 2026-10-14 — feedback round 3: snips, screen questions, topics, clean lesson ends
+
+- **Snip answers are separated per question.** The worksheet text is split into questions and parts (1, 2(a), 2(b)…), handling "2 (a)", "2a)", unpunctuated exam numbering, mark allocations and answer lines. The model answers each under its own label, and the card shows each question as read with its answer indented underneath. Previously the one-line-per-question format ran together, because Markdown joins single line breaks.
+- **"What I read" is visible and fixable.** It shows before the answer arrives. **Edit** solves corrected text; **Read again (vision)** re-reads the same selection with the vision model.
+- **Maths symbols.** Snips are upscaled harder before OCR, so superscripts survive. All superscript characters are mapped (x¹² → x^12, x⁻¹ → x^(-1)), as are ½ ¼ ¾. "x?" from OCR becomes x^2 on every line, not just Tesseract re-reads. Tokens like "x2" are flagged on the card and in the prompt, never silently rewritten. The model is told not to change any number, sign or power, and the question text shown is GLASS's own reading, not the model's retelling.
+- **"answer question 2b" works.** In the Fix tab, "answer" used to be parsed as a command to redo the *previous* answer, and the reference was dropped. References now open that question (with its stem) from the screen or the last snip. Snips are now remembered with their numbering. With nothing to look at, GLASS says how to fix that instead of guessing.
+- **Screen reading does something visible.** New questions on the shared screen raise an **On screen** offer (Solve all / per question). Detection is deterministic (no model, no extra heat), and each question is offered once per lesson. Optional auto-solve skips while the laptop is hot.
+- **The student can set the topic.** "the topic is concentration", "we're doing moles", "lesson: rates of reaction (chemistry)", or a few words in the Fix tab with nothing to fix. It locks the topic (topic tracking only refines the subtopic), can set the subject, feeds speech-recognition hints, and redoes the current answer with it.
+- **Ending a lesson really ends it.** The overlay and Live view clear. In-flight answers, topic tracking and task extraction from the old lesson are cancelled. The final notes pass now runs on its own copy of the ended lesson's memory. Before, it shared memory with the next lesson, so a late topic/subject result could carry the old subject into the new lesson. The new lesson's subject and topic are pushed to the UI immediately, and the screen reader re-reads even an unchanged screen.
+- The final notes pass waits for a notes update that is already running. Before, it silently skipped, losing the end of the lesson from the notes.
+
+Tests: 110 unit tests (Linux, CPU only), including splitting, references to parts, powers, topic statements, answer pairing, Fix-box routing, and a start → end → start lifecycle check. Also 5/5 macOS port tests. Not run: the GPU harness and live-app tests, which need the Windows laptop.
+
 ## Known limitations (honest)
 
 - **Real classroom audio not tested.** All speech tests used Windows SAPI voices. Real teachers (accents, crosstalk, poor microphones, Meet compression) will reduce accuracy. Add name spellings in Settings → Student if GLASS mishears "Sanad".

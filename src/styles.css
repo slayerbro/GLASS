@@ -177,6 +177,19 @@ select.field option { background: #1a1d27; }
 .md > :first-child { margin-top: 0; }
 .md .katex { font-size: 1.05em; }
 .md input[type="checkbox"] { accent-color: var(--lumen); margin-right: 6px; }
+.md blockquote { margin: 0.4em 0; padding-left: 10px; border-left: 2px solid var(--edge-strong); color: var(--muted); }
+.md hr { border: 0; border-top: 1px solid var(--edge); margin: 0.8em 0; }
+
+/* ------------------------------------------------------------------ snip: one block per question */
+.snip-q { padding: 9px 0 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.snip-q:first-child { border-top: 0; padding-top: 2px; }
+.q-label { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--lumen); background: rgba(168, 180, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(168, 180, 255, 0.22); border-radius: 6px; padding: 1px 6px; flex: none; line-height: 1.5; }
+.q-stem { font-size: 11.5px; color: var(--faint); line-height: 1.45; white-space: pre-wrap; margin-bottom: 4px; }
+.q-text { font-size: 12.5px; color: #cfd4df; line-height: 1.45; white-space: pre-wrap; user-select: text; }
+.q-answer { margin: 6px 0 0 12px; padding-left: 10px; border-left: 2px solid rgba(168, 180, 255, 0.35); }
+.q-answer .md p { margin: 0.15em 0; }
+
 
 @layer components {
 /* ------------------------------------------------------------------ dashboard */

@@ -1,6 +1,6 @@
 // WebSocket client for the local engine + the shared Zustand store.
 import { create } from 'zustand';
-import type { Answer, GlassAsk, EngineStatus, Lesson, Metrics, Mode, Notes, ScreenObs, Session, Settings, Task, Utter } from './types';
+import type { Answer, GlassAsk, EngineStatus, Lesson, Metrics, Mode, Notes, ScreenObs, ScreenQuestions, Session, Settings, Task, Utter } from './types';
 
 interface EngineProc { state: string; message?: string; port?: number; token?: string }
 
@@ -29,14 +29,23 @@ export interface GlassState {
   focusAnswer: string | null; // answer shown in the overlay
   asks: GlassAsk[]; // questions GLASS is asking the student
   registerCall: { t: number; text: string } | null;
+  screenQuestions: ScreenQuestions | null; // questions GLASS noticed on the shared screen
+  finalisedAt: number; // bumps when an ended lesson's final notes are saved
 }
 
 const initial: GlassState = {
   proc: { state: 'starting' }, connected: false, status: null, session: null, lastEnded: null, mode: 'idle',
   lesson: { subject_id: null, topic: '', subtopic: '', summary: '' }, task: null, taskHistory: [], answers: {}, order: [],
   transcript: [], partial: null, speaking: false, screen: null, notes: null, notesMd: '', settings: null, metrics: {},
-  attention: null, waitingFor: null, focusAnswer: null, asks: [], registerCall: null,
+  attention: null, waitingFor: null, focusAnswer: null, asks: [], registerCall: null, screenQuestions: null, finalisedAt: 0,
 };
+
+// what a lesson shows; cleared when a lesson ends and when the next one starts
+const lessonBlank = (): Partial<GlassState> => ({
+  lesson: { subject_id: null, topic: '', subtopic: '', summary: '' }, task: null, taskHistory: [], answers: {}, order: [],
+  transcript: [], partial: null, speaking: false, screen: null, attention: null, waitingFor: null, focusAnswer: null,
+  asks: [], registerCall: null, screenQuestions: null,
+});
 
 export const useGlass = create<GlassState>(() => initial);
 const set = useGlass.setState;
@@ -93,6 +102,9 @@ function onEvent(e: any) {
     case 'session.update': set({ session: e.session, ...(e.ended ? { lastEnded: e.ended } : {}) }); break;
     case 'mode': set({ mode: e.mode }); break;
     case 'lesson.state': set({ lesson: e.state }); break;
+    case 'lesson.reset': set({ ...lessonBlank(), ...(e.ended ? {} : { notes: null, notesMd: '' }) }); break;
+    case 'screen.questions': set({ screenQuestions: { id: e.id, t: e.t, questions: e.questions, new: e.new } }); break;
+    case 'session.finalised': set({ finalisedAt: Date.now() }); break;
     case 'answer.update': upsertAnswer(e.answer); break;
     case 'question.waiting': set({ waitingFor: e.answer_id }); break;
     case 'attention': set({ attention: e }); break;
@@ -108,7 +120,13 @@ function onEvent(e: any) {
       break;
     }
     case 'screen.observation': set({ screen: e }); break;
-    case 'notes.update': set({ notes: e.notes, notesMd: e.markdown }); break;
+    case 'notes.update': {
+      // the final notes pass of a lesson that already ended must not overwrite the live one
+      const live = get().session;
+      if (!live || !e.session_id || e.session_id === live.id) set({ notes: e.notes, notesMd: e.markdown });
+      else set({ finalisedAt: Date.now() });
+      break;
+    }
     case 'settings': set({ settings: e.settings }); break;
     case 'metrics': set({ metrics: e.metrics }); break;
     case 'reply': {

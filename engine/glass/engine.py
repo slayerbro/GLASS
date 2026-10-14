@@ -31,7 +31,7 @@ from .texts import QUOTE_REQUEST
 from .intel import LessonIntel, notes_markdown
 from .llm import VISION, OllamaClient, Scheduler
 from .mathsolve import MathService
-from .memory import LessonMemory, ScreenObs, Utterance
+from .memory import LessonMemory, ScreenObs, Utterance, label_key, split_questions
 from .screen import ScreenService, list_monitors, list_windows
 from .thermal import RUNTIME as THERMAL_RUNTIME
 from .thermal import ThermalGuard
@@ -53,6 +53,7 @@ class Engine:
         self.intel = LessonIntel(self.llm, self.sched, self.mem, self.settings, self.db, bus.emit)
         self.intel.after_job = self.answers.warm_prefix
         self.answers.on_answer = self.maybe_ask_for_book
+        self.answers.on_topic = self.set_topic
         self.screen = ScreenService(self.settings, self._on_screen_obs, self._screen_status, self._on_vision_request)
         self.names = NameDetector(self.settings.get("student_name"), self.settings.get("name_aliases"))
         self.asr = ASRWorker(self._on_segment_thread, self._asr_status)
@@ -90,6 +91,8 @@ class Engine:
         self._task_due = 0.0
         self._register_until = 0.0
         self._asked: set[str] = set()
+        self._screen_seen: set[str] = set()  # questions on screen already offered this lesson
+        self._screen_offer: dict | None = None  # {"id", "text"} of the latest offer
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -202,9 +205,7 @@ class Engine:
         if not self.settings.get("consent_acknowledged"):
             raise PermissionError("Capture consent has not been confirmed in GLASS settings")
         self.mem.reset()
-        self._asked = set()
-        self.answers.answers.clear()
-        self.pending_q = None
+        self._clear_lesson_state()
         subj = self.settings.subject_by_id(subject_id) if subject_id else None
         self.mem.subject_id = subject_id
         self.mem.subject_locked = bool(subject_id)
@@ -219,7 +220,9 @@ class Engine:
         self._start_audio(capture)
         if capture and self.settings.get("screen_enabled"):
             self.screen.start()
+        bus.emit("lesson.reset", session_id=sid)
         bus.emit("session.update", session=self.session_public())
+        bus.emit("lesson.state", state=self.mem.state())
         self._set_mode("passive")
         return self.session
 
@@ -230,23 +233,58 @@ class Engine:
         self._stop_audio()
         await self.screen.stop()
         self.session = None
+        # answers still being written belong to the lesson that just ended
+        self.sched.cancel_where(lambda key, p: key.split(":", 1)[0] in (
+            "answer", "verify", "snip", "snipv", "ask", "question", "explain", "catchup", "tutor", "state", "task"))
+        # The final notes pass keeps the ended lesson's memory and notes to itself; the
+        # engine gets fresh ones at once, so nothing from this lesson (topic, subject,
+        # late background results) can leak into the next one.
+        old_mem, old_intel = self.mem, self.intel
+        self.mem = LessonMemory()
+        self.answers.mem = self.mem
+        self.intel = LessonIntel(self.llm, self.sched, self.mem, self.settings, self.db, bus.emit)
+        self.intel.model, self.intel.num_ctx = old_intel.model, old_intel.num_ctx
+        self.intel.after_job = self.answers.warm_prefix
+        self._clear_lesson_state()
+        self.answers.session_id = None
         self._set_mode("idle")
+        bus.emit("lesson.reset", session_id=None, ended=sess["id"])
         bus.emit("session.update", session=None, ended=sess["id"])
-        # final notes pass in the background (the UI shows them updating)
-        if self.mem.utterances:
-            t = self._spawn(self._finalise(sess["id"]))
+        bus.emit("lesson.state", state=self.mem.state())
+        # final notes pass in the background (the Notes view shows them updating)
+        if old_mem.utterances:
+            t = self._spawn(self._finalise(sess["id"], old_mem, old_intel))
             self._finalising.add(t)
             t.add_done_callback(self._finalising.discard)
         else:
             self.db.update_session(sess["id"], ended_at=time.time())
         return sess
 
-    async def _finalise(self, sid: str) -> None:
+    def _clear_lesson_state(self) -> None:
+        """Everything the overlay shows about a lesson starts empty."""
+        self._asked = set()
+        self.answers.answers.clear()
+        self.pending_q = None
+        self.attention = None
+        self._partial_alerted.clear()
+        self._register_until = 0.0
+        self._task_pending = False
+        self._task_due = 0.0
+        self._screen_seen = set()
+        self._screen_offer = None
+        self.screen.reset_state()
+
+    async def _finalise(self, sid: str, mem: LessonMemory, intel: LessonIntel) -> None:
         try:
-            await self.intel.update_notes(final=True)
+            # a regular notes pass may still be running; the final pass would skip if started now
+            for _ in range(600):
+                if not intel._notes_running:
+                    break
+                await asyncio.sleep(0.1)
+            await intel.update_notes(final=True)
         finally:
-            topic = self.mem.topic or (self.intel.notes or {}).get("topic", "")
-            self.db.update_session(sid, ended_at=time.time(), topic=topic, summary=self.mem.lesson_summary[:600])
+            topic = mem.topic or (intel.notes or {}).get("topic", "")
+            self.db.update_session(sid, ended_at=time.time(), topic=topic, summary=mem.lesson_summary[:600])
             bus.emit("session.finalised", session_id=sid)
 
     def session_public(self) -> dict | None:
@@ -282,6 +320,22 @@ class Engine:
             if subj:
                 self.intel.notes["subject"] = subj["name"]
         self._configure_asr()
+        bus.emit("lesson.state", state=self.mem.state())
+
+    def set_topic(self, topic: str | None, subject_id: str | None = None) -> None:
+        """The student said what the lesson is about: it outranks automatic topic tracking."""
+        if subject_id and self.settings.subject_by_id(subject_id):
+            self.set_subject(subject_id)
+        if topic:
+            self.mem.topic = topic[:60]
+            self.mem.topic_locked = True
+            self.mem.subtopic = ""
+            self.mem.key_terms.setdefault(topic[:40], "")  # helps speech recognition spell it
+            if self.session:
+                self.db.update_session(self.session["id"], topic=self.mem.topic)
+            if self.intel.notes is not None and not self.intel.notes.get("topic"):
+                self.intel.notes["topic"] = self.mem.topic
+            self._configure_asr()
         bus.emit("lesson.state", state=self.mem.state())
 
     # ------------------------------------------------------------------ audio path
@@ -609,6 +663,7 @@ class Engine:
             self.answers._push(ans, force=True)
 
     async def _task(self, text: str) -> None:
+        lesson_intel = self.intel
         # wait for the teacher to finish the instruction: quiet for 1.2 s and no
         # speech still being transcribed (bounded, so a monologue can't stall it)
         t0 = time.time()
@@ -618,9 +673,11 @@ class Engine:
                 break
             await asyncio.sleep(0.2)
         await asyncio.sleep(0.15)  # let the last final transcript land in memory
+        if lesson_intel is not self.intel or not self.session:
+            return  # the lesson ended meanwhile
         self._task_pending = False
         self._task_due = 0.0
-        t = await self.intel.extract_task(text)
+        t = await lesson_intel.extract_task(text)
         if t:
             self._last_task_t = time.time()
             self._set_mode("task")
@@ -633,6 +690,44 @@ class Engine:
         self.mem.add_screen(obs)
         bus.emit("screen.observation", text=obs.text[:3000], items={str(k): v for k, v in obs.items.items()},
                  equations=obs.equations, title=obs.title, t=obs.t, ocr_ms=round(self.screen.ocr.last_ms))
+        self._offer_screen_questions(obs)
+
+    def _offer_screen_questions(self, obs: ScreenObs) -> None:
+        """New questions appeared on the shared screen (a worksheet, an exam question, an
+        equation on a slide): offer to solve them, or solve them straight away if the
+        student turned that on. Deterministic and cheap — no model runs until asked."""
+        if not self.session or self.paused:
+            return
+        if obs.items:
+            qs = [q for q in split_questions(obs.text) if q["label"][:1].isdigit()]
+        elif obs.equations:
+            lines = obs.text.splitlines()
+            qs = [{"label": str(i + 1), "text": next((ln.strip() for ln in lines if eq.replace(" ", "") in ln.replace(" ", "")), eq)}
+                  for i, eq in enumerate(obs.equations[:6])]
+        else:
+            return
+        keys = {q["label"]: label_key(q["label"]) + "|" + re.sub(r"\W", "", q["text"].lower())[:80] for q in qs}
+        new = [q for q in qs if keys[q["label"]] not in self._screen_seen]
+        if not new:
+            return  # same worksheet as before (scrolling, re-read): don't nag
+        self._screen_seen |= set(keys.values())
+        oid = f"scr_{int(time.time() * 1000)}"
+        self._screen_offer = {"id": oid, "text": obs.text}
+        bus.emit("screen.questions", id=oid, t=time.time(),
+                 questions=[{"label": q["label"], "text": q["text"][:300]} for q in qs[:12]],
+                 new=[q["label"] for q in new])
+        if self.settings.get("screen_autosolve") and self.thermal.level not in ("hot", "critical"):
+            self._spawn(self.solve_screen(oid, [q["label"] for q in new]))
+
+    async def solve_screen(self, offer_id: str | None, labels: list[str] | None) -> dict:
+        offer = self._screen_offer
+        text = offer["text"] if offer and (not offer_id or offer["id"] == offer_id) else \
+            (self.mem.latest_screen().text if self.mem.latest_screen() else "")
+        if not text:
+            raise ValueError("Nothing has been read from the screen yet.")
+        self._last_help_t = time.time()
+        self._set_mode("confusion")
+        return await self.answers.solve_screen(text, labels)
 
     def _on_vision_request(self, obs: ScreenObs, png: bytes) -> None:
         if self.answers.vision_model != self.answers.text_model:
@@ -671,7 +766,6 @@ class Engine:
                                           "minimised or protected from capture.")
             self.answers._push(ans, force=True)
             return ans
-        self.mem.add_screen(ScreenObs(time.time(), text, {}, [], "Selection", source="snip"))
         self._last_help_t = time.time()
         self._set_mode("confusion")
         return await self.answers.solve_snip(png, text, use_vision)

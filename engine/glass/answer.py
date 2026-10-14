@@ -25,8 +25,8 @@ from . import prompts as P
 from .detect import NameHit, QuestionSignal, content_words, extract_reference, question_kind
 from .texts import QUOTE_REQUEST, find_quotes, normalise as norm_text, quote_in
 from .llm import ANSWER, DIRECT, REVISION, TASK, VISION, LLMError, OllamaClient, Scheduler, reraise_if_cancelled
-from .mathsolve import MathService, find_problems
-from .memory import LessonMemory
+from .mathsolve import MathService, find_problems, flat_powers, normalise as norm_math
+from .memory import LessonMemory, ScreenObs, label_key, parse_numbered_items, questions_text, split_questions
 
 log = logging.getLogger("glass.answer")
 
@@ -58,6 +58,85 @@ _FILLER_WORDS = re.compile(r"\b(it|this|that|the|question|q|please|pls|just|me|g
 META_SAY = re.compile(r"^\s*(the (teacher|question) (is )?(ask|want)|this question|the question (is|asks|wants)|to answer (this|the)|"
                       r"you (need|have|should) to|it('s| is) asking|they('re| are) asking|i (need|would need|can'?t)|"
                       r"let me|we need to|in order to answer|the answer (depends|would depend))", re.I)
+
+
+# "the topic is concentration", "we're doing moles", "this lesson is about natural selection"
+TOPIC_STATEMENT = re.compile(
+    r"^\s*(?:(?:the|this|our|today'?s)\s+)?(?:lesson|topic|class|subject|unit|chapter|lecture)(?:\s+today)?\s*"
+    r"(?:is|'s|=|:|-)\s*(?:about\s+|on\s+|called\s+)?(?P<a>.+)$"
+    r"|^\s*(?:it'?s|this is)\s+(?:a|the)\s+(?:lesson|class)\s+(?:about|on)\s+(?P<b>.+)$"
+    r"|^\s*(?:we'?re|we are|we'?ve been|the teacher is|they'?re)\s+(?:doing|learning(?:\s+about)?|studying|covering|"
+    r"talking about|on)\s+(?P<c>.+)$",
+    re.I)
+SUBJECT_WORDS = [
+    ("english literature", "english_lit"), ("english lit", "english_lit"), ("english language", "english_lang"),
+    ("computer science", "cs"), ("design and technology", "dt"), ("design & technology", "dt"),
+    ("mathematics", "maths"), ("maths", "maths"), ("math", "maths"), ("biology", "biology"), ("bio", "biology"),
+    ("chemistry", "chemistry"), ("chem", "chemistry"), ("physics", "physics"), ("business studies", "business"),
+    ("business", "business"), ("computing", "cs"), ("literature", "english_lit"), ("arabic", "arabic"),
+]
+
+
+def parse_topic(text: str) -> tuple[str | None, str | None]:
+    """-> (topic, subject_id) when the student tells GLASS what the lesson is about."""
+    m = TOPIC_STATEMENT.match(text.strip())
+    if not m:
+        return None, None
+    rest = (m.group("a") or m.group("b") or m.group("c") or "").strip(" .!,;:")
+    rest = re.sub(r"\s+(today|now|right now|in this lesson)$", "", rest, flags=re.I)
+    subject = None
+    for word, sid in SUBJECT_WORDS:
+        sm = re.search(rf"(?:^|\s*(?:\bin\b|\bfor\b|\bfrom\b|,|-|\())\s*\b{re.escape(word)}\b\)?", rest, re.I)
+        if sm:
+            subject = sid
+            rest = (rest[:sm.start()] + " " + rest[sm.end():]).strip(" .,-()")
+            rest = re.sub(r"^(a|an|the)\s+(lesson|class)\b\s*(about|on)?\s*", "", rest, flags=re.I).strip()
+            break
+    rest = re.sub(r"\s+", " ", rest)[:60]
+    return (rest or None), subject
+
+
+_HEAD = re.compile(r"^[ \t]*(?:#{1,4}[ \t]*|\*\*[ \t]*)(?:question|q)?[ \t]*\[?(\d{1,2}[ \t]*(?:\(?[a-h]\)?)?(?:[ \t]*\(?(?:i{1,3}|iv|vi{0,3})\))?"
+                   r"|\(?[a-h]\))\]?[ \t]*[.:)]?[ \t]*(?:\*\*)?[ \t]*$", re.I | re.M)
+
+
+def _paragraphs(md: str) -> str:
+    """One line = one line: the model writes working on separate lines, but Markdown
+    joins single line breaks into one run-on paragraph."""
+    segs = md.strip().split("$$")  # odd segments are display maths: their line breaks stay
+    return "$$".join(re.sub(r"(?<!\n)\n(?!\n)", "\n\n", x) if i % 2 == 0 else x for i, x in enumerate(segs))
+
+
+def pair_parts(questions: list[dict], body: str) -> list[dict]:
+    """Split the model's answer into one block per question, matched by label, so each
+    question is shown with its own answer. [] when the answer has no blocks."""
+    known = {label_key(q["label"]) for q in questions}
+    # "### 3" is always a heading; a bold "**12**" line only when 12 is one of the questions
+    heads = [h for h in _HEAD.finditer(body) if h.group(0).lstrip().startswith("#") or label_key(h.group(1)) in known]
+    if not heads:
+        if len(questions) == 1 and body.strip():
+            return [{**questions[0], "answer": _paragraphs(body)}]
+        return []
+    blocks: dict[str, str] = {}
+    order: list[tuple[str, str]] = []
+    for i, h in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
+        label = re.sub(r"\s+", "", h.group(1))
+        k = label_key(label)
+        if len(questions) == 1 and k not in known:
+            k = label_key(questions[0]["label"])
+        blocks[k] = (blocks.get(k, "") + "\n" + body[h.end():end]).strip()
+        order.append((k, label))
+    out, used = [], set()
+    for q in questions:
+        k = label_key(q["label"])
+        out.append({**q, "answer": _paragraphs(blocks.get(k, ""))})
+        used.add(k)
+    for k, label in order:  # answers to questions we didn't split out ourselves
+        if k not in used:
+            used.add(k)
+            out.append({"label": label, "text": "", "answer": _paragraphs(blocks[k])})
+    return out
 
 
 def parse_commands(text: str) -> tuple[list[str], str]:
@@ -105,6 +184,8 @@ class AnswerEngine:
         self.last_llm_use = time.time()
         self._corpus: dict[str, list[tuple[str, str]]] = {}  # subject -> [(title, normalised text)]
         self.on_answer = None  # engine hook after each finished answer
+        self.on_topic = None  # engine hook: the student said what the lesson is about
+        self._last_snip: tuple[str, bytes] | None = None  # (answer id, image) for "read again with vision"
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -117,9 +198,13 @@ class AnswerEngine:
         topic = self.mem.topic or "not yet clear"
         if self.mem.subtopic:
             topic += f" / {self.mem.subtopic}"
+        if self.mem.topic_locked:
+            topic += f"  ({self.name} said this is the topic — interpret every question within it)"
         return f"LESSON: {subj} — topic: {topic}"
 
     def _push(self, ans: dict, force: bool = False) -> None:
+        if self.answers.get(ans["id"]) is not ans:
+            return  # cleared when the lesson ended: a late update must not bring the card back
         now = time.perf_counter()
         if not force and now - self._last_emit.get(ans["id"], 0) < 0.05:
             return
@@ -255,9 +340,9 @@ class AnswerEngine:
         hits = [h for h in self.db.search(" ".join(words[:8]), self.mem.subject_id, limit=3) if h["session_id"] != self.session_id]
         return "\n".join(f"- {h['title']}: {h['snippet']}" for h in hits[:2])
 
-    async def _solve(self, exprs: list[str]) -> list[tuple[str, str]]:
+    async def _solve(self, exprs: list[str], limit: int = 4) -> list[tuple[str, str]]:
         out = []
-        for e in exprs[:4]:
+        for e in exprs[:limit]:
             r = await asyncio.to_thread(self.math.run, e)
             if r.ok and r.value and r.value != "no solution":
                 out.append((e, r.value))
@@ -310,41 +395,109 @@ class AnswerEngine:
 
     async def clarify(self, text: str) -> dict:
         """Instant context: the student typed a few words. They are either context for the
-        active question ("natural selection", "question 4") or an instruction about the
-        answer ("answer it", "shorter", "give quotes", "that's wrong") — or both."""
+        active question ("natural selection", "question 4"), an instruction about the
+        answer ("answer it", "shorter", "give quotes", "that's wrong"), a request for an
+        on-screen question ("answer question 2b"), or what the lesson is about."""
         text = text.strip()
+        topic, subject = parse_topic(text)
+        if topic or subject:
+            return await self.set_topic(text, topic, subject)
         cmds, context = parse_commands(text)
+        ref = extract_reference(text)
         active = self.mem.active_question
+        fresh = bool(active and time.time() - active["t"] < 300)
         last = self._last_answer()
-        if not active or time.time() - active["t"] >= 300:
-            if cmds and last and time.time() - last["t"] < 300:
+        recent = bool(last and time.time() - last["t"] < 300)
+        if ref.get("question_number") and (cmds or not fresh):
+            # "answer question 2b" is a new request, not a tweak of the previous answer
+            return await self.solve_reference(text, ref)
+        if not fresh:
+            if recent and last["mode"] in ("question", "ask"):
+                if cmds == ["detailed"] and not context:
+                    return await self.expand(last["id"])
                 return await self._redo(last, cmds, context)
+            if cmds and recent:
+                return await self._redo(last, cmds, context)
+            if not cmds and "?" not in text and len(text.split()) <= 4:
+                # nothing to fix: a few words of context describe the lesson itself
+                return await self.set_topic(text, text.strip(" .!,;:"), None)
             return await self.ask(text)
         old = self.answers.get(active.get("answer_id", ""))
         if cmds == ["detailed"] and not context and old:
             return await self.expand(old["id"])
         if cmds:
             return await self._redo(old or last, cmds, context, active=active)
+        ctx = self.mem.clarifications.setdefault(active["id"], [])
+        ctx.append(text)
+        ans = self._new("question", question=active["text"], kind=active.get("kind", ""), qid=active["id"],
+                        directed=old["directed"] if old else None, clarifications=list(ctx),
+                        replaces=old["id"] if old else None)
+        active["answer_id"] = ans["id"]
+        self._push(ans, force=True)
+        if ref.get("question_number"):  # "no, question 4" corrects which item is meant
+            active["ref_n"] = ref["question_number"]
+        elif active.get("ref_n"):
+            ref = {"question_number": active["ref_n"]}
+        await self._run_answer(ans, active["text"], ref, DIRECT, extra=list(ctx))
+        return ans
+
+    async def set_topic(self, text: str, topic: str | None, subject: str | None) -> dict:
+        """The student told GLASS what the lesson is about. It sticks for the whole lesson
+        (topic tracking won't overwrite it) and the answer on screen is redone with it."""
+        if self.on_topic:
+            self.on_topic(topic, subject)
+        else:
+            if subject:
+                self.mem.subject_id, self.mem.subject_locked = subject, True
+            if topic:
+                self.mem.topic, self.mem.topic_locked = topic, True
+        active = self.mem.active_question
+        target = None
         if active and time.time() - active["t"] < 300:
-            ctx = self.mem.clarifications.setdefault(active["id"], [])
-            ctx.append(text)
-            ans = self._new("question", question=active["text"], kind=active.get("kind", ""), qid=active["id"],
-                            directed=old["directed"] if old else None, clarifications=list(ctx),
-                            replaces=old["id"] if old else None)
-            active["answer_id"] = ans["id"]
+            target = self.answers.get(active.get("answer_id", ""))
+        last = self._last_answer()
+        if target is None and last and last["mode"] in ("question", "ask") and last.get("kind") != "note" \
+                and time.time() - last["t"] < 300:
+            target = last
+        if target is not None and topic:
+            return await self._redo(target, [], f"the lesson topic is {topic}",
+                                    active=active if active and target.get("qid") == active.get("id") else None)
+        subj = (self.settings.subject_by_id(subject) or {}).get("name") if subject else None
+        what = " ".join(x for x in [f"this lesson is about {topic}" if topic else "", f"({subj})" if subj and topic else
+                                    f"this is a {subj} lesson" if subj else ""] if x)
+        ans = self._new("ask", question=text, kind="note", conf="high", status="done",
+                        say=f"Got it — {what}. I'll use that for answers and notes.")
+        self._push(ans, force=True)
+        return ans
+
+    async def solve_reference(self, text: str, ref: dict) -> dict:
+        """"answer question 2b": find that question on the screen (or in a snip) and solve it."""
+        n, part = ref["question_number"], ref.get("part")
+        label = f"{n}({part})" if part else str(n)
+        item = self.mem.screen_items().get(n)
+        if item:
+            qs = split_questions(f"{n}. {item}")
+            if part:
+                qs = [q for q in qs if label_key(q["label"]) == f"{n}{part}"] or qs
+            ans = self._new("snip", question=f"Question {label}", title=f"Question {label}", origin="reference")
             self._push(ans, force=True)
-            ref = extract_reference(text)  # "no, question 4" corrects which item is meant
-            if ref.get("question_number"):
-                active["ref_n"] = ref["question_number"]
-            elif active.get("ref_n"):
-                ref = {"question_number": active["ref_n"]}
-            await self._run_answer(ans, active["text"], ref, DIRECT, extra=list(ctx))
+            return await self._solve_selection(ans, questions_text(qs), time.perf_counter(), qs=qs, remember=False)
+        if not self.mem.latest_screen():
+            ans = self._new("ask", question=text, status="error",
+                            error=f"I can't see question {label}. Turn on screen reading (Settings → Screen) or snip the "
+                                  f"question (Snip, or Ctrl+Alt+S) — then “answer question {label}” works.")
+            self._push(ans, force=True)
             return ans
-        return await self.ask(text)
+        ans = self._new("ask", question=f"Question {label}", kind="recall")
+        self._push(ans, force=True)
+        await self._run_answer(ans, f"question {label} on the screen", {}, DIRECT, extra=[], instructions=[
+            f"Find question {label} in the SCREEN TEXT and answer it: SAY is the final answer, WHY the key working. "
+            f"If question {label} is not in the screen text, set CONF: low and say you can't see it."])
+        return ans
 
     def _last_answer(self) -> dict | None:
         for a in reversed(list(self.answers.values())):
-            if a["status"] == "done" and a["mode"] in ("question", "ask", "snip", "tutor", "explain"):
+            if a["status"] == "done" and a["mode"] in ("question", "ask", "snip", "tutor", "explain") and a.get("kind") != "note":
                 return a
         return None
 
@@ -376,6 +529,12 @@ class AnswerEngine:
 
     async def ask(self, text: str) -> dict:
         """Free request typed by the student (topic, question, formula, attempt)."""
+        topic, subject = parse_topic(text)
+        if topic or subject:
+            return await self.set_topic(text, topic, subject)
+        ref = extract_reference(text)
+        if ref.get("question_number") and len(content_words(text)) <= 4:
+            return await self.solve_reference(text, ref)
         sig_kind = question_kind(text)
         ans = self._new("ask", question=text, kind=sig_kind)
         self._push(ans, force=True)
@@ -634,7 +793,7 @@ class AnswerEngine:
     # ------------------------------------------------------------- long-form modes
     async def _stream_markdown(self, ans: dict, system: str, user: str, prio: int, field: str = "body",
                                images: list[bytes] | None = None, model: str | None = None,
-                               num_predict: int = 700) -> None:
+                               num_predict: int = 700, on_update: Callable[[dict], None] | None = None) -> None:
         t0 = time.perf_counter()
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -648,6 +807,8 @@ class AnswerEngine:
                     ans["latency"]["first_ms"] = round((time.perf_counter() - t0) * 1000)
                 buf += chunk
                 ans[field] = buf
+                if on_update:
+                    on_update(ans)
                 self._push(ans)
             ans["latency"]["total_ms"] = round((time.perf_counter() - t0) * 1000)
             return buf
@@ -770,9 +931,37 @@ class AnswerEngine:
             except Exception:
                 pass
 
+    async def _read_with_vision(self, ans: dict, image_png: bytes) -> str | None:
+        """Transcribe a selection with the vision model; None (and an error on the card) if unreadable."""
+        ans["status"] = "reading"
+        self._push(ans, force=True)
+        transcribe = ("Transcribe exactly what this image from a school lesson shows: every question (keep the numbering "
+                      "and part letters like (a), (b) on their own lines), all maths in plain text (use ^ for powers, e.g. "
+                      "x^2 for x squared, and sqrt()), labels and values from any diagram, graph or table. Copy every "
+                      "number, sign and power exactly. Then one line starting 'DIAGRAM:' describing any diagram. Do not "
+                      "solve anything. Never guess or invent content: if the image is blank, too blurry or has no "
+                      "readable content, reply exactly UNREADABLE.")
+        msgs = [{"role": "user", "content": transcribe}]
+
+        async def vjob():
+            return await self.llm.chat(self.vision_model, msgs, think=False, num_ctx=self.num_ctx, num_predict=700,
+                                       temperature=0.1, images=[image_png])
+
+        text = await self.sched.submit(DIRECT, vjob, key=f"snipv:{ans['id']}")
+        self.after_vision()
+        if "UNREADABLE" in text.upper()[:40]:
+            ans["status"] = "error"
+            ans["error"] = "The selection couldn't be read. Try selecting a larger, sharper area."
+            self._push(ans, force=True)
+            return None
+        ans["sources"].append("vision")
+        return text
+
     async def solve_snip(self, image_png: bytes, ocr_text: str, use_vision: bool) -> dict:
         """Snip & Solve: the student selected a region of the screen."""
-        ans = self._new("snip", question="Selected region", ocr=ocr_text[:2000])
+        ans = self._new("snip", question="Selected region", title="Your selection", ocr=ocr_text[:3000],
+                        can_vision=bool(self.settings.profile().get("vision_enabled", True)))
+        self._last_snip = (ans["id"], image_png)
         self._push(ans, force=True)
         t0 = time.perf_counter()
         problem_text = ocr_text.strip()
@@ -785,28 +974,13 @@ class AnswerEngine:
                 return ans
             use_vision = False
         if use_vision or len(re.sub(r"\W", "", problem_text)) < 12:
-            ans["status"] = "reading"
-            self._push(ans, force=True)
-            transcribe = ("Transcribe exactly what this image from a school lesson shows: every question (keep numbering), "
-                          "all maths in plain text (use ^ for powers, sqrt()), labels and values from any diagram, graph or table. "
-                          "Then one line starting 'DIAGRAM:' describing any diagram. Do not solve anything. Never guess or "
-                          "invent content: if the image is blank, too blurry or has no readable content, reply exactly UNREADABLE.")
-            msgs = [{"role": "user", "content": transcribe}]
-
-            async def vjob():
-                return await self.llm.chat(self.vision_model, msgs, think=False, num_ctx=self.num_ctx, num_predict=600,
-                                           temperature=0.1, images=[image_png])
-
             try:
-                problem_text = await self.sched.submit(DIRECT, vjob, key=f"snipv:{ans['id']}")
-                self.after_vision()
-                if "UNREADABLE" in problem_text.upper()[:40]:
-                    ans["status"] = "error"
-                    ans["error"] = "The selection couldn't be read. Try selecting a larger, sharper area."
-                    self._push(ans, force=True)
+                read = await self._read_with_vision(ans, image_png)
+                if read is None:
                     return ans
-                ans["sources"].append("vision")
+                problem_text = read
             except Exception as e:
+                reraise_if_cancelled()
                 log.warning("vision failed: %s", e)
                 ans["unsure"] = "vision model unavailable; used OCR text only"
                 if not problem_text:
@@ -816,9 +990,70 @@ class AnswerEngine:
                     return ans
         else:
             ans["sources"].append("ocr")
-        ans["ocr"] = problem_text[:2000]
+        return await self._solve_selection(ans, problem_text, t0)
+
+    async def resolve_snip(self, answer_id: str, text: str | None = None, vision: bool = False) -> dict:
+        """The student checked what GLASS read: solve their corrected text, or re-read the
+        same selection with the vision model (better with powers, fractions and diagrams)."""
+        old = self.answers.get(answer_id)
+        if old is None:
+            raise ValueError("That answer is no longer available — snip the question again.")
+        ans = self._new("snip", question=old["question"], title=old.get("title") or "Your selection",
+                        origin=old.get("origin"), replaces=answer_id, can_vision=old.get("can_vision", False))
+        old["status"] = "superseded"
+        self._push(old, force=True)
+        self._push(ans, force=True)
+        t0 = time.perf_counter()
+        if vision:
+            if not self._last_snip or self._last_snip[0] != answer_id:
+                raise ValueError("Only the latest snip can be re-read — snip it again with V (diagram mode) on.")
+            png = self._last_snip[1]
+            self._last_snip = (ans["id"], png)
+            try:
+                read = await self._read_with_vision(ans, png)
+            except Exception as e:
+                reraise_if_cancelled()
+                ans["status"], ans["error"] = "error", f"The vision model couldn't read it ({e})"
+                self._push(ans, force=True)
+                return ans
+            if read is None:
+                return ans
+            return await self._solve_selection(ans, read, t0)
+        ans["sources"].append("edited")
+        if self._last_snip and self._last_snip[0] == answer_id:
+            self._last_snip = (ans["id"], self._last_snip[1])
+        return await self._solve_selection(ans, text or old.get("ocr", ""), t0)
+
+    async def solve_screen(self, text: str, labels: list[str] | None = None) -> dict:
+        """Solve questions GLASS found on the shared screen (all, or the ones tapped)."""
+        qs = split_questions(norm_math(text))
+        if labels:
+            want = {label_key(l) for l in labels}
+            # "2" selects every part of question 2
+            qs = [q for q in qs if label_key(q["label"]) in want or re.sub(r"[a-z]+$", "", label_key(q["label"])) in want]
+        if not qs:
+            raise ValueError("Those questions are no longer on the screen.")
+        title = "Questions on screen" if len(qs) > 1 else f"Question {qs[0]['label']} on screen"
+        ans = self._new("snip", question=title, title=title, origin="screen")
+        self._push(ans, force=True)
+        return await self._solve_selection(ans, questions_text(qs), time.perf_counter(), qs=qs, remember=False)
+
+    async def _solve_selection(self, ans: dict, problem_text: str, t0: float, qs: list[dict] | None = None,
+                               remember: bool = True) -> dict:
+        """Shared by snips, screen questions and "answer question 2b": show the student
+        exactly what was read, then answer each question in its own block."""
+        problem_text = norm_math(problem_text).strip()
+        qs = qs if qs is not None else split_questions(problem_text)
+        ans["ocr"] = problem_text[:3000]
+        ans["questions"] = qs[:20]
+        ans["powers"] = flat_powers(problem_text)
+        ans["status"] = "thinking"
         ans["latency"]["read_ms"] = round((time.perf_counter() - t0) * 1000)
-        verified = await self._solve(find_problems(problem_text))
+        self._push(ans, force=True)
+        if remember:  # later, "answer question 2b" can refer to what was snipped
+            self.mem.add_screen(ScreenObs(time.time(), problem_text, parse_numbered_items(problem_text),
+                                          find_problems(problem_text), "Selection", source="snip"))
+        verified = await self._solve(find_problems(problem_text), limit=8)
         if verified:
             ans["verified"] = True
             ans["result"] = "; ".join(f"{e} → {v}" for e, v in verified)
@@ -826,6 +1061,18 @@ class AnswerEngine:
         # the selection is the question: keep the lesson context short so it can't hijack the answer
         ctx = self._context_block({"sources": []}, problem_text, [], None, verified, 1200)
         system = P.SYSTEM_SNIP.format(name=self.name, guide=P.guide(self.mem.subject_id))
-        user = f"{ctx}\n\nSELECTED CONTENT:\n{problem_text}"
-        await self._stream_markdown(ans, system, user, DIRECT, num_predict=420)
+        user = f"{ctx}\n\nQUESTIONS:\n{questions_text(qs) if qs else problem_text}"
+        if ans["powers"]:
+            user += (f"\n\nPOSSIBLY FLATTENED POWERS (OCR): {', '.join(ans['powers'])} — most likely "
+                     + ", ".join(f"{p[:-1]}^{p[-1]}" for p in ans["powers"]) + "; say so in the working if you assume it.")
+
+        def update(a: dict) -> None:
+            a["parts"] = pair_parts(a["questions"], a["body"])
+
+        await self._stream_markdown(ans, system, user, DIRECT, num_predict=min(1500, 220 + 140 * max(1, len(qs))),
+                                    on_update=update)
+        update(ans)
+        if not ans["parts"]:
+            ans["body"] = _paragraphs(ans["body"])
+        self._push(ans, force=True)
         return ans

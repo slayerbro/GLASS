@@ -70,8 +70,15 @@ How the Mac version differs:
 5. Not sure what the teacher means? Press **Ctrl+Alt+Space** and type two or three words (`natural selection`, `question 4`, `the graph`). The answer is redone with that context.
 
 **The text box has two tabs** (press Tab to switch):
-- **Ask:** any new question about the lesson.
+- **Ask:** any new question about the lesson. *answer question 2b* solves that question from the screen or your last snip.
 - **Fix:** the answer on screen. Add context ("natural selection", "question 4") or tell it what to do: *answer it*, *shorter*, *simpler*, *more detail*, *quotes*, *that's wrong*.
+- **Tell it the topic** in either tab: *the topic is concentration*, *we're doing moles*, *this lesson is about natural selection (biology)*. The topic sticks for the whole lesson, and the answer on screen is redone with it.
+
+**Snip & Solve** shows every question it read, each with its own answer underneath. Check what it read: if a power or sign is wrong (OCR can turn x² into x2), tap **Edit**, fix it and solve again, or **Read again (vision)**. When it reads "x2" in maths, it says it assumed x².
+
+**Questions on screen:** with screen reading on, GLASS notices a new worksheet or question on the shared screen and offers **Solve all** or one question at a time. Settings → Screen → *Solve questions as they appear* answers them without asking.
+
+**End lesson** clears the overlay and the Live view; the next lesson starts with the subject you pick.
 
 **Books and notes (Subjects → Books & notes):** add your own copy of a set text, revision guide or notes (PDF, EPUB, Word, text). GLASS answers from it and checks every quotation word-for-word against it. A ✓ means the quote was found in your book. Without the book, GLASS won't give quotes at all; it names the moment to quote instead.
 

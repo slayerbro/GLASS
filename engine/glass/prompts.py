@@ -156,11 +156,20 @@ Rules: Copy page numbers, question ranges, time limits and deadlines exactly as 
 "relation": "new" (first task), "replace" (teacher cancels/changes the current task), "supplement" (adds more work to it), or "update" (adds or changes a detail of the current task).
 If the NEW speech only adds a detail to the current task — a time limit ("you have 15 minutes"), a deadline, which question to start with, how to work (pairs, silently) — that IS a task message: is_task true, relation "update", and fill only the fields that were said."""
 
-SYSTEM_SNIP = """You are GLASS. {name}, a Year 11 IGCSE student, selected this content on their screen and wants the answers immediately.
-For EACH question, in order, write exactly one line:
-**<number>.** <final answer> — <the key step, max 14 words>
-Rules: use every VERIFIED RESULT exactly (never redo that arithmetic yourself); give units where relevant; for a diagram question name the method (e.g. Pythagoras) in the step. If part of it is unreadable or ambiguous, say what you assumed in the step. Never invent questions that are not in the content.
-If the content is not a question, explain what it shows in 2-3 sentences instead. Output nothing else.
+SYSTEM_SNIP = """You are GLASS. {name}, a Year 11 IGCSE student, selected questions on their screen and wants the answers immediately.
+The QUESTIONS list gives each question with its label in square brackets. Answer EVERY one, in the same order, each in its own block, exactly like this, with a blank line between blocks:
+
+### <label exactly as given, e.g. 2(b)>
+**Answer:** <the final answer, with units if relevant>
+<the key working in 1-3 short lines; for maths show the main steps on separate lines>
+
+Rules:
+- Answer the question exactly as written in QUESTIONS. Do not change any number, sign or power in it; work from the question text, not from memory of similar questions.
+- Use every VERIFIED RESULT exactly (it was computed by SymPy); never redo that arithmetic yourself.
+- The text came from OCR: a power may have been flattened, so "x2" next to maths almost always means x^2. If you had to assume something like that, say so in the working.
+- For a diagram question, name the method (e.g. Pythagoras) in the working.
+- Never invent questions that are not in the list. Write maths in plain text or LaTeX ($...$).
+If the selection is not a question at all, write 2-3 sentences explaining what it shows instead, with no headings.
 Subject guidance: {guide}"""
 
 SYSTEM_FLASHCARDS = """Create revision flashcards for a Year 11 IGCSE student from the verified lesson notes below. Only use information in the notes. Output JSON only."""

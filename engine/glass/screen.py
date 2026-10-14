@@ -223,13 +223,14 @@ class OCR:
             self._win[lang] = eng
         return self._win[lang]
 
-    async def read(self, img: np.ndarray, lang: str = "en-US") -> list[dict]:
-        """Returns lines: [{text, x, y, w, h}] in image pixel coordinates."""
+    async def read(self, img: np.ndarray, lang: str = "en-US", small_text: bool = False) -> list[dict]:
+        """Returns lines: [{text, x, y, w, h}] in image pixel coordinates.
+        small_text: a snip — upscale harder so superscripts (x², 10³) survive."""
         t = time.perf_counter()
         h, w = img.shape[:2]
         scale = 1.0
         if max(w, h) < 1400:
-            scale = min(2.0, 2000 / max(w, h))  # small text recognises far better upscaled
+            scale = min(3.0 if small_text else 2.0, (2600 if small_text else 2000) / max(w, h))  # small text recognises far better upscaled
         try:
             if IS_MAC and self.engine != "tesseract":
                 from . import macos
@@ -281,7 +282,7 @@ class OCR:
                 alt = pytesseract.image_to_string(im, lang="eng", config="--psm 7").strip()
             except Exception:
                 return
-            alt = re.sub(r"([a-z])\?(?=\s*[-+=)])", r"\1^2", alt)  # x² read as x?
+            alt = fix_power_marks(alt)
             if self._math_score(alt) > self._math_score(l["text"]) + 1:
                 l["text"] = alt
 
@@ -345,11 +346,16 @@ class OCR:
                 for l in lines.values()]
 
 
+def fix_power_marks(s: str) -> str:
+    """OCR often reads the superscript in x² as "?" or "°": x? + 3 -> x^2 + 3."""
+    return re.sub(r"(?<![A-Za-z])([a-z)])[?°](?=\s*[-+=)*/])", r"\1^2", s) if re.search(r"[=+\-]", s) else s
+
+
 def lines_to_text(lines: list[dict]) -> str:
     """Reading order, Meet UI chrome removed."""
     keep = [l for l in lines if not MEET_NOISE.match(l["text"].strip()) and len(l["text"].strip()) > 1]
     keep.sort(key=lambda l: (round(l["y"] / max(8, l["h"] * 0.6)), l["x"]))
-    return "\n".join(normalise(l["text"]) for l in keep)
+    return "\n".join(normalise(fix_power_marks(l["text"])) for l in keep)
 
 
 # ---------------------------------------------------------------------------- service
@@ -401,6 +407,13 @@ class ScreenService:
                 pass
         self._task = None
         self.on_status("off", {})
+
+    def reset_state(self) -> None:
+        """A new lesson: read the screen afresh even if it shows the same thing as before."""
+        self._last_text = ""
+        self._tiles_prev = self._tiles_ocr = self._activity = None
+        self._pending_change = False
+        self._last_full = None
 
     def pause(self, paused: bool) -> None:
         self._paused = paused
@@ -670,8 +683,8 @@ class ScreenService:
         gray = img[::4, ::4, :3].astype(np.float32).mean(axis=2)
         if float(gray.std()) < 3.0:
             return b"", "", True
-        lines = await self.ocr.read(img, self.language)
-        text = "\n".join(normalise(l["text"]) for l in sorted(lines, key=lambda l: (round(l["y"] / 10), l["x"])))
+        lines = await self.ocr.read(img, self.language, small_text=True)
+        text = "\n".join(normalise(fix_power_marks(l["text"])) for l in sorted(lines, key=lambda l: (round(l["y"] / 10), l["x"])))
         png = await asyncio.to_thread(to_png, img, 1600)
         return png, text, False
 

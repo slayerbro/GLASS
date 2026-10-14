@@ -69,6 +69,27 @@ export interface Answer {
   quotes?: { q: string; ok: boolean; source: string; texts: number }[];
   feedback?: string;
   instruction?: string;
+  // snips, screen questions and "answer question 2b"
+  title?: string;
+  origin?: 'reference' | 'screen' | null;
+  questions?: SnipQuestion[]; // what GLASS read, one entry per question / part
+  parts?: (SnipQuestion & { answer: string })[]; // each question with its own answer
+  powers?: string[]; // "x2"-style tokens that are probably flattened powers
+  can_vision?: boolean;
+  replaces?: string;
+}
+
+export interface SnipQuestion {
+  label: string;
+  text: string;
+  stem?: string;
+}
+
+export interface ScreenQuestions {
+  id: string;
+  t: number;
+  questions: SnipQuestion[];
+  new: string[];
 }
 
 export interface GlassAsk {
@@ -125,6 +146,7 @@ export interface Lesson {
   topic: string;
   subtopic: string;
   summary: string;
+  topic_locked?: boolean; // the student said what the lesson is about
 }
 
 export interface Subject {
@@ -144,6 +166,7 @@ export interface Settings {
   screen_enabled: boolean;
   screen_source: { kind: 'window' | 'monitor'; hwnd?: number; title?: string; monitor?: number; meet?: boolean } | null;
   screen_crop: number[] | null;
+  screen_autosolve?: boolean;
   exclusion_zones: number[][];
   ocr_engine: 'windows' | 'tesseract';
   vision_model: string;

@@ -113,6 +113,8 @@ export function Overlay() {
   useEffect(() => {
     if (s.task && s.mode === 'task' && view === 'pill') setView('auto');
   }, [s.task?.id]);
+  // new questions on the shared screen: open up so the offer to solve them is seen
+  useEffect(() => { if (s.screenQuestions && view === 'pill') setView('auto'); }, [s.screenQuestions?.id]);
   // detailed answer requested via shortcut
   useEffect(() => {
     if (level === 'detailed' && answer && !answer.detailed && answer.say) cmd('answer.expand', { id: answer.id }).catch(() => {});
@@ -197,6 +199,7 @@ export function Overlay() {
         <ThermalNotice />
         <RegisterNote />
         <GlassAsks onError={flash} />
+        <ScreenOffer onError={flash} />
 
         <AnimatePresence mode="popLayout" initial={false}>
           <motion.div key={body + (body === 'answer' ? answer?.id : '')} layout initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
@@ -322,6 +325,42 @@ function GlassAsks({ onError }: { onError: (e: Error) => void }) {
           </div>
         </>
       ) : <div className="text-[12px] text-exact leading-snug">{note}</div>}
+    </div>
+  );
+}
+
+/** GLASS spotted questions on the shared screen: solve them in one tap. */
+function ScreenOffer({ onError }: { onError: (e: Error) => void }) {
+  const offer = useGlass((s) => s.screenQuestions);
+  const auto = useGlass((s) => !!s.settings?.screen_autosolve);
+  const [hidden, setHidden] = useState<string | null>(null);
+  const [, tick] = useState(0);
+  useEffect(() => { if (!offer) return; const t = setTimeout(() => tick((x) => x + 1), 300000); return () => clearTimeout(t); }, [offer?.id]);
+  if (!offer || hidden === offer.id || auto || Date.now() / 1000 - offer.t > 300) return null;
+  const qs = offer.questions;
+  const solve = (labels?: string[]) => {
+    setHidden(offer.id);
+    cmd('screen.solve', { offer: offer.id, labels: labels ?? null }).catch(onError);
+  };
+  // group parts under their question number so the row stays short: 1 · 2 · 3 …
+  const numbers = [...new Set(qs.map((q) => q.label.replace(/\(.*$/, '')))];
+  return (
+    <div className="mx-3 mb-2 rounded-[9px] px-3 py-2 bg-[rgba(127,224,181,0.06)] shadow-[inset_0_0_0_1px_rgba(127,224,181,0.2)]">
+      <div className="flex items-start gap-2">
+        <span className="eyebrow text-exact mt-[1px]">On screen</span>
+        <button className="ml-auto text-faint hover:text-muted text-[12px] leading-none" aria-label="Dismiss" onClick={() => setHidden(offer.id)}>×</button>
+      </div>
+      <div className="text-[12.5px] mt-0.5 leading-snug">
+        {qs.length === 1 ? <>I can see a question: <span className="text-muted">{qs[0].text.slice(0, 90)}</span></> :
+          <>I can see {qs.length} questions on the screen.</>}
+      </div>
+      <div className="flex flex-wrap gap-1 mt-1.5">
+        <button className="btn btn-primary h-[24px] text-[11.5px]" onClick={() => solve()}>{qs.length === 1 ? 'Solve it' : 'Solve all'}</button>
+        {qs.length > 1 && numbers.slice(0, 8).map((n) => (
+          <button key={n} className="btn h-[24px] text-[11.5px] mono" title={qs.filter((q) => q.label.startsWith(n)).map((q) => `${q.label}: ${q.text}`).join('\n')}
+            onClick={() => solve([n])}>{n}</button>
+        ))}
+      </div>
     </div>
   );
 }

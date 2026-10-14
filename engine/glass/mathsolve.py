@@ -18,9 +18,13 @@ log = logging.getLogger("glass.math")
 
 # --------------------------------------------------------------------------- text normalisation
 _UNICODE = {
-    "×": "*", "·": "*", "÷": "/", "−": "-", "–": "-", "—": "-", "²": "^2", "³": "^3", "√": "sqrt",
+    "×": "*", "·": "*", "÷": "/", "−": "-", "–": "-", "—": "-", "√": "sqrt",
     "π": "pi", "≤": "<=", "≥": ">=", "＝": "=", "⁄": "/", "°": "",
+    "½": "(1/2)", "⅓": "(1/3)", "⅔": "(2/3)", "¼": "(1/4)", "¾": "(3/4)", "⅕": "(1/5)", "⅛": "(1/8)",
 }
+# a run of superscript characters is one exponent: x¹² -> x^12, x⁻¹ -> x^(-1)
+_SUPER = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺ⁿˣ", "0123456789-+nx")
+_SUPER_RUN = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺ⁿˣ]+")
 _WORD_OPS = [
     (r"\bsquared\b", "^2"), (r"\bcubed\b", "^3"), (r"\btimes\b", "*"), (r"\bmultiplied by\b", "*"),
     (r"\bdivided by\b", "/"), (r"\bover\b", "/"), (r"\bplus\b", "+"), (r"\bminus\b", "-"),
@@ -29,9 +33,35 @@ _WORD_OPS = [
 
 
 def normalise(text: str) -> str:
+    def sup(m: re.Match) -> str:
+        p = m.group().translate(_SUPER)
+        return f"^{p}" if p.isalnum() else f"^({p})"
+
+    text = _SUPER_RUN.sub(sup, text)
     for k, v in _UNICODE.items():
         text = text.replace(k, v)
     return text
+
+
+# OCR flattens superscripts: "x²" often comes back as "x2". A single letter (or a
+# closing bracket) glued to a digit inside maths is almost always a power.
+_FLAT_POWER = re.compile(r"(?<![A-Za-z^_])([a-z]|\))([2-9])(?![0-9a-z.(])")
+_MATHY_LINE = re.compile(r"[=+\-*/^]|\b(solve|simplify|expand|factori[sz]e|evaluate|differentiate|find)\b", re.I)
+
+
+def flat_powers(text: str) -> list[str]:
+    """Tokens like "x2" or "(x+1)3" in maths lines that are probably powers the OCR
+    flattened. Shown to the student to check — never silently rewritten."""
+    out: list[str] = []
+    for line in text.splitlines():
+        if not _MATHY_LINE.search(line):
+            continue
+        body = re.sub(r"^\s*(?:Q(?:uestion)?\s*)?\d+\s*\(?[a-h]?\)?\s*[.):]?\s*", "", line, flags=re.I)
+        for m in _FLAT_POWER.finditer(body):
+            tok = m.group(1) + m.group(2)
+            if tok not in out:
+                out.append(tok)
+    return out
 
 
 SAFE_CHARS = re.compile(r"^[\w\s+\-*/^().,=<>!\[\]{}:]*$")

@@ -122,6 +122,14 @@ class Server:
         if cmd == "snip":
             ans = await e.snip(int(m["x"]), int(m["y"]), int(m["w"]), int(m["h"]), bool(m.get("vision")))
             return {"id": ans["id"]}
+        if cmd == "snip.retry":
+            # the student corrected what was read, or wants it re-read with the vision model
+            ans = await a.resolve_snip(m["id"], m.get("text"), bool(m.get("vision")))
+            return {"id": ans["id"]}
+        if cmd == "screen.solve":
+            e.note_help_request()
+            ans = await e.solve_screen(m.get("offer"), m.get("labels") or None)
+            return {"id": ans["id"]}
         if cmd == "snip.freeze":
             # snapshot the monitor BEFORE the selection window opens (see ScreenService.freeze)
             res = await asyncio.to_thread(e.screen.freeze, int(m["x"]), int(m["y"]))

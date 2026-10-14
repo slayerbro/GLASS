@@ -16,6 +16,7 @@ export function LiveView() {
         <div className="px-5 pt-4 pb-3 border-b border-white/[0.06]">
           <div className="eyebrow">{subj || 'Subject not detected yet'}</div>
           <div className="h-title mt-0.5">{s.lesson.topic || (s.session ? 'Listening for the topic…' : 'No lesson running')}</div>
+          {s.lesson.topic_locked && <div className="text-[11px] text-faint mt-0.5">Topic set by you — type “the topic is …” to change it</div>}
           {s.lesson.summary && <div className="text-[12.5px] text-muted mt-1">{s.lesson.summary}</div>}
         </div>
         <Answers />
@@ -151,7 +152,7 @@ function ScreenPanel() {
               <li key={n} className="text-[12.5px] flex gap-2 group">
                 <span className="mono text-faint w-5 flex-none">{n}.</span>
                 <span className="flex-1 whitespace-pre-wrap selectable">{t}</span>
-                <button className="btn h-[20px] text-[10.5px] opacity-0 group-hover:opacity-100" onClick={() => cmd('ask', { text: `question ${n}` })}>Solve</button>
+                <button className="btn h-[20px] text-[10.5px] opacity-0 group-hover:opacity-100" onClick={() => cmd('screen.solve', { labels: [n] }).catch(() => {})}>Solve</button>
               </li>
             ))}
           </ol>

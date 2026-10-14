@@ -179,6 +179,9 @@ function Screen({ st, patch }: P) {
       <Row label="Read the screen during lessons" hint="Lets GLASS see slides, worksheets and equations. Only the source below is captured; other windows are never included.">
         <Toggle on={st.screen_enabled} onChange={(v) => patch({ screen_enabled: v })} label="Screen reading" />
       </Row>
+      <Row label="Solve questions as they appear" hint="When a worksheet or question shows up on the screen, GLASS offers to solve it. Turn this on to solve new questions straight away (uses more power).">
+        <Toggle on={!!st.screen_autosolve} onChange={(v) => patch({ screen_autosolve: v })} label="Solve questions automatically" />
+      </Row>
       <Row label="What to read" hint="Pick the Google Meet window for best results.">
         <select className="field h-[28px] w-[280px]" value={value} onChange={(e) => {
           const v = e.target.value;

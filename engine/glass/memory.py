@@ -45,6 +45,104 @@ class ScreenObs:
 
 ITEM_RE = re.compile(r"^\s*(?:(?:Q(?:uestion)?|Ex(?:ercise)?)\s*(\d{1,2})\s*[.):]?|(\d{1,2})\s*[.):])\s+(.+)$", re.I)
 ITEM_PAREN = re.compile(r"^\s*\((\d{1,2})\)\s+(.+)$")
+# "2(a) Work out…", "2 (a) …", "2a) …" — exam papers put the first part on the number's line
+ITEM_PART_RE = re.compile(r"^\s*(?:Q(?:uestion)?\s*)?(\d{1,2})\s*(?:\(([a-h])\)|([a-h])[.)])\s*(.*)$", re.I)
+# "2  Work out…" — exam papers print the number with no full stop
+ITEM_BARE_RE = re.compile(r"^\s*(\d{1,2})\s{1,4}(?=[A-Za-z(])(.+)$")
+PART_RE = re.compile(r"^\s*(?:\(([a-h])\)|([a-h])[.)])\s*(.*)$")
+SUBPART_RE = re.compile(r"^\s*\((i{1,3}|iv|vi{0,3})\)\s*(.*)$")
+# answer lines and mark allocations on printed worksheets
+_PAPER_NOISE = re.compile(r"^\s*(\.{4,}|_{4,}|\(total for question.*|\(\d+\s*marks?\)|\(\d\)|answer\s*\.{3,}.*)\s*$", re.I)
+_MARKS_TAIL = re.compile(r"\s+\(\d+\s*(marks?)?\)\s*$", re.I)
+
+
+def label_key(label: str) -> str:
+    """'Q2 (b)' / '2b' / '2(b)' -> '2b' so labels written differently still match."""
+    return re.sub(r"^(q|question)", "", re.sub(r"[^0-9a-z]", "", label.lower()))
+
+
+def split_questions(text: str) -> list[dict]:
+    """Split worksheet text into separate questions, keeping parts apart.
+
+    "1. Solve 2x+7=19\\n2 f(x)=x^2\\n(a) Find f(3)\\n(b) Solve f(x)=9" ->
+      [{label: "1", text: "Solve 2x+7=19"},
+       {label: "2(a)", text: "Find f(3)", stem: "f(x)=x^2"},
+       {label: "2(b)", text: "Solve f(x)=9", stem: "f(x)=x^2"}]
+    Text with no numbering is one question. Preamble ("Solve these equations:")
+    becomes the stem of the questions that follow it."""
+    numbers: list[dict] = []  # {n, stem, parts: [[letter, text]]}
+    preamble: list[str] = []
+    cur: dict | None = None
+
+    def open_number(n: int, rest: str) -> dict:
+        q = {"n": n, "stem": rest.strip(), "parts": []}
+        numbers.append(q)
+        return q
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or _PAPER_NOISE.match(line):
+            continue
+        line = _MARKS_TAIL.sub("", line)
+        last_n = numbers[-1]["n"] if numbers else 0
+        m = ITEM_PART_RE.match(line)
+        if m and 0 < int(m.group(1)) < 60:
+            cur = open_number(int(m.group(1)), "")
+            cur["parts"].append([(m.group(2) or m.group(3)).lower(), m.group(4).strip()])
+            continue
+        m = ITEM_RE.match(line)
+        mp = None if m else ITEM_PAREN.match(line)
+        if m or mp:
+            n, body = (int(m.group(1) or m.group(2)), m.group(3)) if m else (int(mp.group(1)), mp.group(2))
+            if 0 < n < 60 and not (mp and numbers):  # "(2)" after a question is a mark
+                cur = open_number(n, body)
+                pm = PART_RE.match(cur["stem"])  # "Q3 a) speed"
+                if pm:
+                    cur["stem"] = ""
+                    cur["parts"].append([(pm.group(1) or pm.group(2)).lower(), pm.group(3).strip()])
+                continue
+        m = ITEM_BARE_RE.match(line)
+        if m and (int(m.group(1)) == last_n + 1 or (not numbers and int(m.group(1)) <= 3)):
+            cur = open_number(int(m.group(1)), m.group(2))
+            continue
+        m = PART_RE.match(line)
+        if m and (cur is not None or not numbers):
+            if cur is None:  # a selection that starts at a part: "(b) Find…"
+                cur = open_number(0, "")
+            cur["parts"].append([(m.group(1) or m.group(2)).lower(), m.group(3).strip()])
+            continue
+        if cur is None:
+            preamble.append(line)
+        elif cur["parts"]:
+            cur["parts"][-1][1] = (cur["parts"][-1][1] + "\n" + line).strip()
+        else:
+            cur["stem"] = (cur["stem"] + "\n" + line).strip()
+
+    pre = "\n".join(preamble).strip()
+    if not numbers:
+        return [{"label": "1", "text": pre}] if pre else []
+    out: list[dict] = []
+    for q in numbers:
+        stem = "\n".join(s for s in (pre, q["stem"]) if s)
+        if not q["parts"]:
+            out.append({"label": str(q["n"]), "text": q["stem"], "stem": pre})
+            continue
+        for letter, body in q["parts"]:
+            label = f"{q['n']}({letter})" if q["n"] else f"({letter})"
+            out.append({"label": label, "text": body, "stem": stem})
+    return [q for q in out if q["text"] or q["stem"]]
+
+
+def questions_text(qs: list[dict]) -> str:
+    """Questions back to plain text, one block per question (for prompts)."""
+    blocks, last_stem = [], None
+    for q in qs:
+        stem = q.get("stem") or ""
+        if stem and stem != last_stem:
+            blocks.append(stem)
+        last_stem = stem
+        blocks.append(f"[{q['label']}] {q['text']}".rstrip())
+    return "\n".join(blocks)
 
 
 def parse_numbered_items(text: str) -> dict[int, str]:
@@ -52,12 +150,20 @@ def parse_numbered_items(text: str) -> dict[int, str]:
     items: dict[int, str] = {}
     current: int | None = None
     for line in text.splitlines():
+        mp = ITEM_PART_RE.match(line)
+        if mp and 0 < int(mp.group(1)) < 60:  # "2(a) Find…" keeps its part letter for references
+            current = int(mp.group(1))
+            items[current] = f"({(mp.group(2) or mp.group(3)).lower()}) {mp.group(4).strip()}"
+            continue
         m = ITEM_RE.match(line)
         if m:
             n, body = int(m.group(1) or m.group(2)), m.group(3)
         else:
             m = ITEM_PAREN.match(line)
             n, body = (int(m.group(1)), m.group(2)) if m else (0, "")
+            mb = None if m else ITEM_BARE_RE.match(line)
+            if mb and int(mb.group(1)) == (current or 0) + 1:  # "2  Work out…" (no full stop)
+                m, n, body = mb, int(mb.group(1)), mb.group(2)
         if m and 0 < n < 60:
             current = n
             items[n] = body.strip()
@@ -79,6 +185,7 @@ class LessonMemory:
         self.subject_id: str | None = None
         self.subject_locked = False
         self.topic = ""
+        self.topic_locked = False  # the student told GLASS the topic: background tracking keeps it
         self.subtopic = ""
         self.summary = ""  # one-line "what's happening now"
         self.lesson_summary = ""  # running multi-line summary (from notes engine)
@@ -146,9 +253,11 @@ class LessonMemory:
             n = ref["question_number"]
             text = items.get(n)
             if text and ref.get("part"):
-                m = re.search(rf"\(?{ref['part']}\)\s*(.+?)(?=\n\s*\(?[a-h]\)|\Z)", text, re.S)
-                if m:
-                    return f"{n}({ref['part']}) {m.group(1).strip()}"
+                want = f"{n}{ref['part']}"
+                for q in split_questions(f"{n}. {text}"):
+                    if label_key(q["label"]) == want:
+                        stem = f"{q['stem']}\n" if q.get("stem") else ""
+                        return f"{n}({ref['part']}) {stem}{q['text']}".strip()
             return f"{n}. {text}" if text else None
         if "ordinal" in ref:
             keys = sorted(items)
@@ -189,6 +298,7 @@ class LessonMemory:
             "topic": self.topic,
             "subtopic": self.subtopic,
             "summary": self.summary,
+            "topic_locked": self.topic_locked,
         }
 
     def add_question(self, q: dict) -> None:

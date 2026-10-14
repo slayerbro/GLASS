@@ -1,11 +1,15 @@
 import { motion, AnimatePresence } from 'motion/react';
 import { useState } from 'react';
-import { BookOpen, Check, CircleAlert, Clock3, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
-import type { Answer } from '../lib/types';
+import { BookOpen, Check, CircleAlert, Clock3, Eye, Pencil, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from 'lucide-react';
+import type { Answer, SnipQuestion } from '../lib/types';
 import { Markdown } from '../components/Markdown';
 import { addStudyText, cmd } from '../lib/engine';
 
 export type Level = 'quick' | 'explain' | 'detailed';
+
+// the overlay is a non-activating window: typing in it needs focus handed over explicitly
+const IN_OVERLAY = typeof location !== 'undefined' && location.pathname.endsWith('overlay.html');
+const overlayFocus = (on: boolean) => { if (IN_OVERLAY) window.glass.send('overlay:focus', on); };
 
 const KIND_LABEL: Record<string, string> = {
   calculation: 'Calculation', definition: 'Definition', explanation: 'Explain', example: 'Example',
@@ -31,7 +35,9 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
   const streaming = a.status === 'streaming' || a.status === 'thinking' || a.status === 'reading';
   const lowConf = a.conf === 'low' || (!!a.unsure && a.conf !== 'high');
 
-  // long-form cards (explain / catch-up / tutor / snip)
+  if (a.mode === 'snip') return <SnipCard a={a} />;
+
+  // long-form cards (explain / catch-up / tutor)
   if (a.mode !== 'question' && a.mode !== 'ask') {
     const title = a.mode === 'tutor' ? a.question : TITLES[a.mode] || a.question;
     return (
@@ -46,12 +52,6 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
           !a.body ? <Thinking label={a.status === 'reading' ? 'Reading your selection…' : 'Thinking…'} /> :
             <div className="max-h-[380px] scroll pr-1 -mr-1"><Markdown text={a.body} className={streaming ? 'caret' : ''} /></div>}
         <Quotes a={a} />
-        {a.mode === 'snip' && a.status === 'done' && a.ocr && (
-          <div className="mt-2.5 flex gap-1">
-            <button className="btn" onClick={() => cmd('tutor', { mode: 'solution', focus: a.ocr }).catch(() => {})}>Show working</button>
-            <button className="btn" onClick={() => cmd('tutor', { mode: 'hint', focus: a.ocr }).catch(() => {})}>Just a hint</button>
-          </div>
-        )}
       </div>
     );
   }
@@ -124,10 +124,118 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
         )}
       </AnimatePresence>
 
-      {a.say && (
+      {a.say && a.kind !== 'note' && (
         <div className="mt-2.5 flex items-center gap-1">
           <Seg level={level} setLevel={(l) => { setLevel(l); if (l === 'detailed' && !a.detailed) cmd('answer.expand', { id: a.id }).catch(() => {}); }} />
-          {a.status === 'done' && <Feedback a={a} />}
+          {a.status === 'done' && a.kind !== 'note' && <Feedback a={a} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Snip & Solve, questions on screen, "answer question 2b": every question shown as GLASS
+ * read it, each with its own answer underneath — so a misread (x³ for x²) is easy to spot
+ * and fix before trusting the answer. */
+function SnipCard({ a }: { a: Answer }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [err, setErr] = useState('');
+  const busy = a.status === 'streaming' || a.status === 'thinking' || a.status === 'reading';
+  const qs = a.questions || [];
+  const parts = a.parts && a.parts.length ? a.parts : null;
+  const title = a.title || TITLES.snip;
+  const retry = (payload: Record<string, unknown>) => {
+    setErr('');
+    cmd('snip.retry', { id: a.id, ...payload }).catch((e) => setErr((e as Error).message));
+  };
+  const startEdit = () => { setDraft(a.ocr || qs.map((q) => `${q.label}. ${q.text}`).join('\n')); setEditing(true); };
+  const canVision = a.can_vision && !a.sources.includes('vision') && !a.origin;
+
+  return (
+    <div className="px-4 pt-3 pb-3">
+      <div className="flex items-center gap-2 mb-1.5">
+        <Sparkles size={12} className="text-lumen" />
+        <span className="eyebrow">{title}</span>
+        {qs.length > 1 && <span className="chip h-[17px] text-[10.5px]">{qs.length} questions</span>}
+        {a.verified && a.result && <span className="chip chip-exact mono" title="Computed exactly with SymPy"><Check size={11} />exact</span>}
+        <span className="ml-auto"><Latency a={a} /></span>
+      </div>
+
+      {editing ? (
+        <div className="mt-1">
+          <div className="text-[11.5px] text-muted mb-1">Fix anything GLASS misread (use ^ for powers, e.g. x^2), then solve again.</div>
+          <textarea className="field w-full h-[110px] py-1.5 mono text-[12px] leading-snug resize-none" value={draft} spellCheck={false}
+            onMouseDown={() => overlayFocus(true)} onFocus={() => overlayFocus(true)} onBlur={() => overlayFocus(false)}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { setEditing(false); retry({ text: draft }); } }}
+            aria-label="Questions as read" />
+          <div className="flex gap-1 mt-1.5">
+            <button className="btn btn-primary" disabled={!draft.trim()} onClick={() => { setEditing(false); retry({ text: draft }); }}>Solve this</button>
+            <button className="btn" onClick={() => setEditing(false)}>Cancel</button>
+          </div>
+        </div>
+      ) : a.status === 'error' ? <ErrorLine a={a} /> : !qs.length ? (
+        <Thinking label={a.status === 'reading' ? 'Reading your selection…' : 'Reading…'} />
+      ) : (
+        <>
+          {!!a.powers?.length && (
+            <div className="mb-1.5 flex gap-1.5 text-[11.5px] text-called leading-snug">
+              <CircleAlert size={12} className="mt-[2px] flex-none" />
+              <span>Check the powers: I read {a.powers.map((p) => `“${p}”`).join(', ')}, which usually means {a.powers.map((p) => `${p.slice(0, -1)}${'⁰¹²³⁴⁵⁶⁷⁸⁹'[+p.slice(-1)]}`).join(', ')}. If that's wrong, tap Edit.</span>
+            </div>
+          )}
+          {!parts && <div className="eyebrow mb-0.5 text-faint">What I read</div>}
+          <div className="max-h-[480px] scroll pr-1 -mr-1">
+            {withNewStemLines(parts ?? qs.map((q) => ({ ...q, answer: '' }))).map(([p, stem], i) => (
+              <QuestionBlock key={p.label + i} q={p} stem={stem} answer={parts ? p.answer : null} busy={busy} />
+            ))}
+            {!parts && (a.body ? (
+              <div className="pt-2 border-t border-white/[0.08]"><Markdown text={a.body} className={busy ? 'caret' : ''} /></div>
+            ) : busy && <Thinking label={qs.length > 1 ? `Solving ${qs.length} questions…` : 'Solving…'} />)}
+          </div>
+        </>
+      )}
+      {err && <div className="text-[11px] text-unsure mt-1">{err}</div>}
+
+      {!editing && !busy && (a.ocr || qs.length > 0) && (
+        <div className="mt-2.5 flex flex-wrap gap-1">
+          <button className="btn" title="Correct what GLASS read and solve again" onClick={startEdit}><Pencil size={11} />Edit</button>
+          {canVision && <button className="btn" title="Read the selection again with the vision model (better for powers, fractions and diagrams; slower)" onClick={() => retry({ vision: true })}><Eye size={11} />Read again (vision)</button>}
+          {a.status === 'done' && a.ocr && (
+            <>
+              <button className="btn" onClick={() => cmd('tutor', { mode: 'solution', focus: a.ocr }).catch(() => {})}>Show working</button>
+              <button className="btn" onClick={() => cmd('tutor', { mode: 'hint', focus: a.ocr }).catch(() => {})}>Just a hint</button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Each question with only the stem lines not already shown above it ("Solve these
+ * equations." once, "f(x) = x^2 + 3" above 2(a) but not again above 2(b)). */
+function withNewStemLines<T extends SnipQuestion>(qs: T[]): [T, string][] {
+  const shown = new Set<string>();
+  return qs.map((q) => {
+    const fresh = (q.stem || '').split('\n').filter((l) => l.trim() && !shown.has(l));
+    fresh.forEach((l) => shown.add(l));
+    return [q, fresh.join('\n')];
+  });
+}
+
+function QuestionBlock({ q, stem, answer, busy }: { q: SnipQuestion; stem: string; answer: string | null; busy: boolean }) {
+  return (
+    <div className="snip-q">
+      {stem && <div className="q-stem line-clamp-4">{stem}</div>}
+      <div className="flex gap-2 items-start">
+        <span className="q-label">{q.label || 'Q'}</span>
+        <div className="q-text flex-1 min-w-0">{q.text || <span className="text-faint">(an extra part GLASS answered)</span>}</div>
+      </div>
+      {answer !== null && (
+        <div className="q-answer">
+          {answer ? <Markdown text={answer} /> : busy ? <Thinking label="Solving…" /> : <span className="text-[12px] text-faint">Not answered — tap Edit to check this question.</span>}
         </div>
       )}
     </div>

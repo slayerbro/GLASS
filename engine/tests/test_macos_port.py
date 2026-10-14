@@ -73,7 +73,7 @@ def test_snip_crop_uses_retina_scale(monkeypatch):
     svc._frozen = (frame, {"index": 1, "left": 0, "top": 0, "w": 1440, "h": 900}, time.time())
     seen = {}
 
-    async def fake_read(img, lang="en-US"):
+    async def fake_read(img, lang="en-US", **kw):
         seen["shape"] = img.shape
         return []
 

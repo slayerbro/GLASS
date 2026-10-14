@@ -127,6 +127,7 @@ DEFAULTS: dict[str, Any] = {
     "screen_enabled": False,
     "screen_source": None,  # {"kind": "window"|"monitor", "hwnd"?, "title"?, "monitor"?}
     "screen_crop": None,  # [x, y, w, h] relative 0..1 inside the source
+    "screen_autosolve": False,  # solve new questions on the shared screen without asking first
     "exclusion_zones": [],  # list of [x, y, w, h] relative rects to blank out
     "ocr_engine": "windows",  # windows | tesseract
     "vision_model": "qwen3-vl:4b-instruct",

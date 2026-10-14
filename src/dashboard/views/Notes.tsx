@@ -14,7 +14,7 @@ export function NotesView() {
   const [hits, setHits] = useState<{ session_id: string; title: string; snippet: string }[] | null>(null);
 
   const load = () => cmd<SessionRow[]>('sessions.list').then(setSessions).catch(() => {});
-  useEffect(() => { if (s.connected) load(); }, [s.connected, s.session?.id, s.lastEnded]);
+  useEffect(() => { if (s.connected) load(); }, [s.connected, s.session?.id, s.lastEnded, s.finalisedAt]);
   useEffect(() => { if (!sel && sessions.length) setSel(s.session?.id || sessions[0].id); }, [sessions]);
   useEffect(() => {
     if (!q.trim()) { setHits(null); return; }
@@ -78,7 +78,7 @@ function SessionNotes({ sid, onDeleted }: { sid: string; onDeleted: () => void }
   const mdRef = useRef<HTMLDivElement>(null);
 
   const load = () => cmd('session.detail', { session_id: sid }).then((d) => { setDetail(d); setCards(d.flashcards || []); }).catch(() => {});
-  useEffect(() => { load(); }, [sid]);
+  useEffect(() => { load(); }, [sid, s.finalisedAt]);  // the final notes of a just-ended lesson arrive later
   useEffect(() => { if (live) { const t = setTimeout(load, 400); return () => clearTimeout(t); } }, [live, s.notesMd]);
 
   const md: string = live && !detail?.notes?.edited ? s.notesMd : detail?.notes?.markdown || '';

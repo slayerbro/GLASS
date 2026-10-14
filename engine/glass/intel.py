@@ -203,7 +203,9 @@ class LessonIntel:
             screen = self.mem.screen_context(800)
             if not ctx and not screen:
                 return
-            user = f"PREVIOUS TOPIC: {self.mem.topic or 'unknown'}\nRECENT SPEECH:\n{ctx}\n\nSCREEN:\n{screen or '(none)'}"
+            topic = (f"TOPIC (the student said so — keep it; only refine the subtopic): {self.mem.topic}"
+                     if self.mem.topic_locked else f"PREVIOUS TOPIC: {self.mem.topic or 'unknown'}")
+            user = f"{topic}\nRECENT SPEECH:\n{ctx}\n\nSCREEN:\n{screen or '(none)'}"
             msgs = [{"role": "system", "content": P.SYSTEM_STATE.format(subject_ids=ids)}, {"role": "user", "content": user}]
 
             async def job():
@@ -214,7 +216,7 @@ class LessonIntel:
             st = json.loads(raw)
             if not self.mem.subject_locked and st.get("subject_id") in ids:
                 self.mem.subject_id = st["subject_id"]
-            if st.get("topic"):
+            if st.get("topic") and not self.mem.topic_locked:
                 self.mem.topic = st["topic"][:60]
             self.mem.subtopic = (st.get("subtopic") or "")[:60]
             self.mem.summary = (st.get("summary") or "")[:200]
