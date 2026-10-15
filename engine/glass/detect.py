@@ -142,7 +142,8 @@ CHECK_PATTERNS = re.compile(
 # questions, but nothing a student needs an answer suggestion for.
 LOGISTICS = re.compile(
     r"\b(no questions|any (other |more |further )?questions|questions\?$|"
-    r"(hear|see) (me|us|it|that|my screen|the screen|the slide|this)|(my|your|the) (mic|microphone|camera|audio|sound|"
+    r"\b(can|could|do|does) (you|everyone|everybody|anyone|you all|you guys)( all)? (hear|see) (me|us|it|that|my screen|the screen|"
+    r"the slide|this)|(my|your|the) (mic|microphone|camera|audio|sound|"
     r"internet|connection|wifi|link|chat|screen|tab)|unmute|muted|frozen|lagging|lag\b|loading|is it working|"
     r"(not|isn't|is not) working|share (my|your|the) screen|sharing|joined|join the|kicked|the call|the meeting|"
     r"who('s| is) (here|there|missing|absent|next|talking|speaking|that)|who (else|wants to|is going)|"
@@ -165,6 +166,7 @@ _NAMED = [
     re.compile(rf"\b(?i:is|are) {_NAME} (?i:here|there|present|absent|online|with us|joining us|back|in class|in today|"
                rf"coming|around|in)\b"),
     re.compile(rf"\b(?i:where's|where is|where are) {_NAME}\W*$"),
+    re.compile(rf"(?:^|\W){_NAME},? (?i:are|r) (?i:you) (?i:here|there|with us|online)\b"),
     re.compile(rf"\b(?i:has|have) (?i:anyone|anybody|someone) (?i:seen|heard from) {_NAME}"),
 ]
 _UNNAMED = re.compile(r"\b(here|present),? (miss|sir|teacher|ma'?am)\b|^\W*(here|present|yes,? miss|yes,? sir)\W*$|"
@@ -184,6 +186,11 @@ def attendance_name(text: str) -> str | None:
     return None
 
 
+def is_register_cue(text: str) -> bool:
+    """The register itself is happening: "I'm going to take the register", "Here, miss"."""
+    return bool(_UNNAMED.search(text.strip()))
+
+
 def is_attendance(text: str) -> bool:
     """Taking the register / asking where a classmate is — never a lesson question."""
     return bool(_UNNAMED.search(text.strip())) or attendance_name(text) is not None
@@ -198,6 +205,7 @@ must what what's whats which who whom whose why how when where where's whats how
 everyone everybody one ones thing things stuff so ok okay right now then next else well um uh yeah yes no not just really
 please answer answers question questions number go get got think mean know see say said tell try again more any some all
 about of to in on at for with from by up out over this one guys class team sir miss
+idea ideas thought thoughts guess guesses suggestion suggestions volunteer volunteers taker takers hands
 """.split())
 
 
@@ -205,6 +213,25 @@ def content_words(text: str, name_aliases: set[str] | None = None) -> list[str]:
     words = re.findall(r"[a-z][a-z']*|\d+", text.lower())
     skip = _FILLER | (name_aliases or set())
     return [w for w in words if w not in skip and len(w) > 1 or w.isdigit()]
+
+
+# the teacher thinking aloud: "how can I say it diplomatically?", "where was I?", "what's the word?"
+SELF_TALK = re.compile(
+    r"\bhow (can|do|shall|should|would) i (say|put|explain|phrase|describe) (it|this|that)\b|\bwhere was i\b|"
+    r"\bwhat was i (saying|going to say)\b|\bwhat('s| is) the word\b|\bwhat am i (doing|saying)\b|"
+    r"\bwhy (did|do) i (do|say|open|close) (that|this)\b|\bwhat do i call (it|this|that)\b", re.I)
+# the teacher inviting answers to the question just asked — they ARE waiting
+NUDGE = re.compile(r"\b(any (ideas|thoughts|guesses|takers|volunteers|suggestions|one)|anyone|anybody|who knows|hands up|"
+                   r"have a (think|guess|go)|take a guess)\b", re.I)
+# a classmate talking to the teacher: "Miss, when I write…", "Sorry sir, I just want to…", "I feel like…"
+CLASSMATE = re.compile(r"^\W*(?:(?:sorry|um+|uh+|so|yeah|yes|oh),?\s+)*(?:miss|sir|teacher|ma'?am)\b|"
+                       r"^\W*(?:um+,?\s+)?(?:i feel like|in my opinion|i would (?:say|argue)|i was wondering|"
+                       r"i (?:actually )?(?:kind of )?stumbled)\b", re.I)
+
+
+def likely_classmate(text: str) -> bool:
+    """Speech from another student rather than the teacher (there is no speaker diarisation)."""
+    return bool(CLASSMATE.search(text))
 
 
 RHETORICAL_FOLLOW = re.compile(
@@ -302,13 +329,19 @@ def classify_question(text: str, next_text: str = "") -> QuestionSignal:
     # walk backwards: the last question-like sentence is what's being asked
     for idx in range(len(sents) - 1, -1, -1):
         s = sents[idx]
+        if idx > 0 and _NAMED[0].search(s) and attendance_name(s):
+            continue  # "…in the story so far? Nikki?": the question before the name is what's asked
         clean = re.sub(r"^(so|okay|ok|right|now|and|alright|well|um|uh|then)[, ]+", "", s, flags=re.I).strip()
         clean = re.sub(r"^\w+,\s+(?=\w)", lambda m: m.group(0) if QUESTION_START.match(m.group(0)) else "", clean)  # drop vocative
         is_q_mark = s.endswith("?")
         starts = bool(QUESTION_START.match(clean))
         imperative = bool(IMPERATIVE_ASK.search(s))
-        if not (is_q_mark or imperative or (starts and len(clean.split()) > 3)):
+        # Whisper punctuates questions; without "?" only an explicit ask counts ("Explain why…",
+        # "Can anyone tell me…"). "What we see Kulfi doing is…" and "is a primal drive…" are statements.
+        if not (is_q_mark or imperative):
             continue
+        if SELF_TALK.search(s):
+            return QuestionSignal(True, "check", s, 0.8, check=True)  # the teacher thinking aloud
         if CHECK_PATTERNS.search(s):
             return QuestionSignal(True, "check", s, 0.8, check=True)
         if LOGISTICS.search(s) or is_attendance(s):
@@ -316,7 +349,11 @@ def classify_question(text: str, next_text: str = "") -> QuestionSignal:
         if TASK_CUE.search(s) and not is_q_mark:
             continue  # instructions handled by the task detector
         following = " ".join(sents[idx + 1:]) or next_text
-        rhetorical = bool(following) and bool(RHETORICAL_FOLLOW.match(following.strip())) and len(following.split()) > 3
+        # the teacher kept talking in the same breath ("What's realistic? What's socially acceptable?
+        # So you could argue…"): not waiting for an answer
+        rest = following.strip()
+        rhetorical = bool(rest) and len(rest.split()) > 3 and (bool(RHETORICAL_FOLLOW.match(rest)) or not (
+            rest.endswith("?") or NUDGE.search(rest) or attendance_name(rest.split(".")[-1].strip())))
         conf = 0.5 + (0.25 if is_q_mark else 0) + (0.15 if starts or imperative else 0)
         ref = extract_reference(s)
         deictic = bool(DEICTIC.search(s)) and not ref and len(s.split()) < 12

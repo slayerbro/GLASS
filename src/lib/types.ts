@@ -51,7 +51,8 @@ export interface Answer {
   directed: NameHit | null;
   waiting: boolean;
   rhetorical: boolean;
-  answered_by?: 'teacher' | 'student';
+  answered_by?: 'teacher' | 'student' | 'classmate';
+  classmate_answer?: string;
   teacher_answer?: string;
   sources: string[];
   clarifications: string[];
@@ -145,6 +146,7 @@ export interface Utter {
   t1?: number;
   partial?: boolean;
   noise?: boolean; // register / chatter: shown, but kept out of the AI's context
+  who?: string; // "classmate": another student speaking (best guess)
 }
 
 export interface Lesson {

@@ -33,7 +33,7 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
   const called = !!a.directed;
   const calledSure = a.directed?.level === 'high';
   const streaming = a.status === 'streaming' || a.status === 'thinking' || a.status === 'reading';
-  const lowConf = a.conf === 'low' || (!!a.unsure && a.conf !== 'high');
+  const lowConf = a.conf === 'low';
 
   if (a.mode === 'snip') return <SnipCard a={a} />;
 
@@ -105,6 +105,12 @@ export function AnswerCard({ a, level, setLevel }: { a: Answer; level: Level; se
       )}
       {a.answered_by === 'teacher' && (
         <div className="mt-1 text-[11px] text-faint">The teacher answered it: <span className="text-muted">{a.teacher_answer}</span></div>
+      )}
+      {a.answered_by === 'classmate' && (
+        <div className="mt-1 text-[11px] text-faint">A classmate answered: <span className="text-muted line-clamp-2">{a.classmate_answer}</span></div>
+      )}
+      {a.unsure && !lowConf && a.status === 'done' && (
+        <div className="mt-1 text-[11px] text-faint">Assumed: {a.unsure}</div>
       )}
       <Quotes a={a} />
       {a.ask && a.status === 'done' && <AskOptions a={a} />}
@@ -274,7 +280,7 @@ function AskOptions({ a }: { a: Answer }) {
       <div className="text-[11.5px] text-lumen">{a.ask!.q}</div>
       <div className="flex flex-wrap gap-1 mt-1.5">
         {a.ask!.options.map((o) => (
-          <button key={o} className="btn h-[22px] text-[11.5px]" onClick={() => cmd('context', { text: o }).catch(() => {})}>{o}</button>
+          <button key={o} className="btn h-[22px] text-[11.5px]" onClick={() => cmd('context', { text: o, answer_id: a.id }).catch(() => {})}>{o}</button>
         ))}
       </div>
     </div>

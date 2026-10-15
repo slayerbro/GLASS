@@ -104,7 +104,7 @@ class Server:
             return {"id": ans["id"]}
         if cmd == "context":
             e.note_help_request() if not e.mem.active_question else None
-            ans = await a.clarify(m["text"])
+            ans = await a.clarify(m["text"], m.get("answer_id"))
             return {"id": ans["id"]}
         if cmd == "answer.expand":
             ans = await a.expand(m["id"])

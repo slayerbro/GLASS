@@ -26,6 +26,7 @@ class Utterance:
     t0: float
     t1: float
     ctx: str | None = None  # compacted text for the AI (noise removed); "" = pure noise
+    who: str = ""  # "classmate" when another student is speaking (best guess; no diarisation)
 
     @property
     def useful(self) -> str:
@@ -252,7 +253,7 @@ class LessonMemory:
                 break
             if u.source == "me" and not include_me:
                 continue
-            who = "Student" if u.source == "me" else "Teacher"
+            who = "Student" if u.source == "me" else "Classmate" if u.who == "classmate" else "Teacher"
             if not u.useful:
                 continue  # register, tech chatter, small talk: not lesson context
             line = f"{who}: {u.useful}"
@@ -261,6 +262,36 @@ class LessonMemory:
             lines.append(line)
             total += len(line)
         return "\n".join(reversed(lines))
+
+    def relevant_earlier(self, query: str, older_than_s: float = 150, k: int = 4, max_chars: int = 900) -> str:
+        """Lines from earlier in THIS lesson that share words with the question — the context a
+        90-second window misses ("what bodily part…?" needs "Kulfi's pregnancy" from 9 minutes ago)."""
+        from .detect import content_words
+
+        stem = lambda w: re.sub(r"'s?$", "", w)[:6]  # crude stemming: Kulfi's/Kulfi, pregnancy/pregnant
+        q = {stem(w) for w in content_words(query) if len(w) > 2}
+        q |= {stem(w) for w in content_words(f"{self.topic} {self.subtopic}") if len(w) > 2}
+        if not q:
+            return ""
+        cutoff = time.time() - older_than_s
+        scored = []
+        for i, u in enumerate(self.utterances):
+            if u.t1 >= cutoff or not u.useful:
+                continue
+            words = {stem(w) for w in content_words(u.useful) if len(w) > 2}
+            hit = len(q & words)
+            if hit:
+                scored.append((hit + 0.001 * i, i, u))
+        out, used = [], 0
+        for _, i, u in sorted(scored, reverse=True)[:k * 2]:
+            who = "Classmate" if u.who == "classmate" else "Student" if u.source == "me" else "Teacher"
+            mins = max(1, round((time.time() - u.t1) / 60))
+            line = f"{who} ({mins} min ago): {u.useful[:300]}"
+            if used + len(line) > max_chars or len(out) >= k:
+                break
+            out.append((i, line))
+            used += len(line)
+        return "\n".join(line for _, line in sorted(out))
 
     def window(self, seconds: float) -> list[Utterance]:
         now = time.time()
@@ -343,7 +374,8 @@ class LessonMemory:
         self.questions = self.questions[-60:]
 
     def transcript_since(self, t: float) -> str:
-        return "\n".join(f"{'Student' if u.source == 'me' else 'Teacher'}: {u.useful}" for u in self.utterances
+        return "\n".join(f"{'Student' if u.source == 'me' else 'Classmate' if u.who == 'classmate' else 'Teacher'}: {u.useful}"
+                         for u in self.utterances
                          if u.t1 >= t and u.useful)
 
     def full_transcript_chars(self) -> int:

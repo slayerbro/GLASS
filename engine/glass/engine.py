@@ -25,8 +25,8 @@ from .audio.vad import SileroVAD
 from .bus import bus
 from .config import DB_PATH, Settings
 from .db import DB
-from .detect import (RHETORICAL_FOLLOW, NameDetector, classify_question, compact_for_context, content_words,
-                     detect_task_cue, is_attendance)
+from .detect import (NUDGE, RHETORICAL_FOLLOW, NameDetector, attendance_name, classify_question, compact_for_context,
+                     content_words, detect_task_cue, is_attendance, is_register_cue, likely_classmate)
 from .texts import QUOTE_REQUEST
 from .intel import LessonIntel, notes_markdown
 from .llm import VISION, OllamaClient, Scheduler
@@ -39,6 +39,9 @@ from .thermal import ThermalGuard
 log = logging.getLogger("glass.engine")
 
 WAIT_AFTER_QUESTION = 1.4  # s of silence after a question => the teacher is waiting for an answer
+# the teacher responding to a student: the classmate's turn is over
+TEACHER_FEEDBACK = re.compile(r"^\W*(yeah,? absolutely|absolutely|excellent|brilliant|good|great|lovely|perfect|exactly|"
+                              r"well done|thank you|thanks|nice|fantastic|spot on|interesting|okay,? good|yes,? (good|exactly))\b", re.I)
 
 
 class Engine:
@@ -91,6 +94,8 @@ class Engine:
         self._task_due = 0.0
         self._register_until = 0.0
         self._asked: set[str] = set()
+        self._classmate_until = 0.0  # a classmate was just called on: their reply is not the teacher
+        self._last_attendance_t = 0.0
         self._screen_seen: set[str] = set()  # questions on screen already offered this lesson
         self._screen_offer: dict | None = None  # {"id", "text"} of the latest offer
 
@@ -196,7 +201,25 @@ class Engine:
             self.asr.language = lang
         aliases = self.settings.get("name_aliases") or []
         terms = list(self.mem.key_terms)[-6:]
-        self.asr.hotwords = " ".join(dict.fromkeys([self.settings.get("student_name"), *aliases[:2], *terms]))
+        self.asr.hotwords = " ".join(dict.fromkeys([self.settings.get("student_name"), *aliases[:2], *terms,
+                                                    *self._book_names(self.mem.subject_id)]))
+
+    def _book_names(self, subject_id: str | None) -> list[str]:
+        """Character and place names from the student's own copy of the set text, so speech
+        recognition spells them right ("Sampath", not "San Path"; "Kulfi", not "coffee")."""
+        if not subject_id:
+            return []
+        cache = self.__dict__.setdefault("_names_cache", {})
+        if subject_id not in cache:
+            try:
+                from .texts import proper_names
+
+                rows = self.db.texts(subject_id)
+                cache[subject_id] = proper_names(" ".join(self.db.text_full(r["id"]) for r in rows[:2])) if rows else []
+            except Exception:
+                log.debug("book names failed", exc_info=True)
+                cache[subject_id] = []
+        return cache[subject_id]
 
     def _asr_status(self, state: str, info: dict) -> None:
         self.status["asr"] = {"state": state, **info}
@@ -272,6 +295,8 @@ class Engine:
         self.attention = None
         self._partial_alerted.clear()
         self._register_until = 0.0
+        self._classmate_until = 0.0
+        self._last_attendance_t = 0.0
         self._task_pending = False
         self._task_due = 0.0
         self._screen_seen = set()
@@ -449,12 +474,20 @@ class Engine:
                     bus.emit("attention", **self.attention)
             return
         bus.emit("transcript.final", id=seg.id, source=seg.source, text=seg.text, t0=seg.t0, t1=seg.t1,
+                 who="classmate" if seg.source == "class" and (likely_classmate(seg.text) or time.time() < self._classmate_until)
+                 and not TEACHER_FEEDBACK.match(seg.text) else "",
                  latency_ms=round(seg.latency_ms),
                  noise=not compact_for_context(seg.text) or (time.time() < self._register_until and len(seg.text.split()) <= 8))
         # compaction: register / tech chatter / small talk never reaches the AI's context
         in_register = time.time() < self._register_until or is_attendance(seg.text)
         ctx = "" if in_register and len(seg.text.split()) <= 8 else compact_for_context(seg.text)
-        u = Utterance(seg.id, seg.source, seg.text, seg.t0, seg.t1, ctx)
+        # no speaker diarisation: a classmate is recognised by how they talk ("Miss, …", "I feel like…")
+        # or by having just been called on ("Nikki?"); the teacher's feedback ends their turn
+        now = time.time()
+        if seg.source == "class" and TEACHER_FEEDBACK.match(seg.text):
+            self._classmate_until = 0.0
+        classmate = seg.source == "class" and not in_register and (likely_classmate(seg.text) or now < self._classmate_until)
+        u = Utterance(seg.id, seg.source, seg.text, seg.t0, seg.t1, ctx, who="classmate" if classmate else "")
         self.mem.chars_since_state -= len(seg.text) - len(ctx)
         self.mem.add_utterance(u)
         if self.settings.get("store_transcript", True) is not False:
@@ -464,14 +497,23 @@ class Engine:
             if self.pending_q:  # the student answered out loud
                 self._resolve_pending("student", seg.text)
             return
-
-        # teacher continued straight after a question: rhetorical / self-answered
-        if self.pending_q and seg.t0 - self.pending_q["t_end"] < 2.5 and RHETORICAL_FOLLOW.match(seg.text.strip()):
-            self._resolve_pending("teacher", seg.text)
+        if classmate:
+            # a classmate's answer settles the open question; their own questions are for the teacher
+            if self.pending_q and ctx:
+                self._resolve_pending("classmate", seg.text)
+            return
 
         word_probs = [(w.text, w.prob) for w in seg.words]
         hit = self.names.scan(seg.text, word_probs)
         sig = classify_question(seg.text)
+        pq = self.pending_q
+        if pq and seg.t0 - pq["t_end"] < 2.5 and RHETORICAL_FOLLOW.match(seg.text.strip()):
+            self._resolve_pending("teacher", seg.text)  # the teacher answered it themselves
+        elif pq and not pq["waiting"] and not pq.get("directed") and seg.id != pq["utt_id"] \
+                and seg.t0 - pq["t_end"] < 1.1 and len(seg.text.split()) > 8 and not (sig.is_question or NUDGE.search(seg.text)
+                                                       or attendance_name(seg.text) or hit):
+            # the teacher carried straight on talking: it wasn't a question for the class
+            self._resolve_pending("rhetorical", seg.text)
         if hit:
             self.attention = {"t": time.time(), "confidence": hit.confidence, "level": hit.level, "text": seg.text}
             bus.emit("attention", **self.attention)
@@ -482,7 +524,12 @@ class Engine:
             log.info("ignored (student marked similar as not a question): %r", sig.text)
         elif is_attendance(seg.text):
             in_register = time.time() < self._register_until
-            self._register_until = time.time() + 90
+            # the register: its own words, or names called in quick succession — not one "Nikki?" mid-lesson
+            if is_register_cue(seg.text) or time.time() - self._last_attendance_t < 40:
+                self._register_until = time.time() + 90
+            self._last_attendance_t = time.time()
+            if not directed and not in_register and attendance_name(seg.text):
+                self._classmate_until = time.time() + 15  # "Nikki?" — the next voice is Nikki
             if directed and (in_register or not recent_q):
                 # "Sanad?" during the register: answer "here", not a question
                 bus.emit("register", text=seg.text, t=time.time())
@@ -495,7 +542,7 @@ class Engine:
                 self._spawn(self._escalate_recent(hit, seg) if directed else self._mark_waiting(seg))
             else:
                 log.info("ignored content-free question: %r", sig.text)
-        elif sig.is_question and not sig.check and not sig.rhetorical:
+        elif sig.is_question and not sig.check and (not sig.rhetorical or directed):
             self._spawn(self._answer_question(sig, hit, seg))
         elif hit and hit.confidence >= 0.45 and not sig.is_question:
             # "Sanad?" / "Sanad, go on" -> the most recent meaningful question is now his
@@ -600,12 +647,15 @@ class Engine:
             raise ValueError("Couldn't find readable text in that file.")
         info = self.db.add_text(subject_id or self.mem.subject_id, title or p.stem.replace("_", " "), p.name, chunks)
         self.answers.invalidate_texts()
+        self.__dict__.pop("_names_cache", None)
+        self._configure_asr()
         bus.emit("texts.update", texts=self.db.texts())
         return info
 
     async def _answer_question(self, sig, hit, seg) -> None:
         # register the pending question first so silence detection starts immediately
-        self.pending_q = {"answer_id": None, "t_end": seg.t1, "waiting": False, "utt_id": seg.id, "text": sig.text}
+        self.pending_q = {"answer_id": None, "t_end": seg.t1, "waiting": False, "utt_id": seg.id, "text": sig.text,
+                          "directed": bool(hit and hit.confidence >= 0.45)}
         # directed questions elevate immediately; class questions only once the
         # teacher is actually waiting (so rhetorical questions never raise the panel)
         if hit and hit.confidence >= 0.45:
@@ -656,9 +706,18 @@ class Engine:
         if not pq:
             return
         ans = self.answers.answers.get(pq.get("answer_id") or "")
+        if ans and by == "rhetorical":
+            ans["rhetorical"] = True
+            self.sched.cancel_where(lambda key, p: key == f"answer:{ans.get('qid') or ans['id']}")
+            self.answers._push(ans, force=True)
+            if self.mode == "question":
+                self._set_mode("passive")
+            return
         if ans:
             ans["answered_by"] = by
             ans["waiting"] = False
+            if by == "classmate":
+                ans["classmate_answer"] = text[:300]
             if by == "teacher":
                 ans["teacher_answer"] = text
                 ans["rhetorical"] = True  # the teacher answered it themselves

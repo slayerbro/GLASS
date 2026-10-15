@@ -76,6 +76,7 @@ function Transcript() {
         <div key={u.id} className="text-[13px] leading-relaxed">
           <span className="mono text-[10.5px] text-faint mr-2">{fmtClock(u.t0)}</span>
           {u.source === 'me' && <span className="chip h-[16px] px-1.5 text-[10px] mr-1.5">you</span>}
+          {u.who === 'classmate' && <span className="chip h-[16px] px-1.5 text-[10px] mr-1.5" title="Another student (best guess)">classmate</span>}
           <span className={u.noise ? 'text-faint' : u.source === 'me' ? 'text-muted' : 'text-[#dfe3ec]'} title={u.noise ? 'Not lesson content — kept out of the AI context' : undefined}>{u.text}</span>
         </div>
       ))}

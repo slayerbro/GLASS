@@ -201,6 +201,46 @@ Ordinary typed questions use 3 minutes of speech (was 90 s) plus "what the teach
 
 Tests: 152 unit tests (incl. 14 request-recognition cases, and a check that the speech, slide and topic reach the model) + 5 macOS port tests.
 
+## 2026-10-15 — feedback round 7: a real English Literature lesson
+
+The student shared a real transcript (register, Freud's id/ego/superego, grotesque realism in *Hullabaloo in the Guava Orchard*) with what GLASS answered. Faults found and fixed:
+
+**Answered things that weren't questions.**
+- Without a "?", only an explicit ask counts now. Before, any sentence starting "What/Is/Have…" with 4+ words counted, so "What we see Kulfi doing is…", "is a primal drive…" (an ASR fragment) and "Have a nice silly thing…" got answered.
+- The teacher thinking aloud ("how can I say it diplomatically?", "where was I?") is ignored.
+- A question followed in the same breath by more explanation is rhetorical ("What's realistic? What's socially acceptable? So you could argue…").
+- So is one the teacher talks straight past: under 1.1 s and more than 8 words, with no name, nudge or new question.
+- "Any ideas?" / "thoughts?" are nudges about the last question, not new questions.
+- "Mohamed are you here?" is the register.
+
+**Rejected real questions** (a pre-existing bug):
+- "Where do we see that in Kulfi?" was treated as tech talk, because the "can you *see that*?" rule matched "do we see that".
+- "…so far? Nikke?" was treated as the register because of the trailing name.
+
+**Classmates were "the teacher."** Without diarisation, a classmate is now recognised two ways: by how they talk ("Miss, …", "Sorry miss…", "I feel like…"), or by having just been called on ("Nikki?"), until the teacher's feedback ("Yeah, absolutely"). Their speech:
+- is labelled *Classmate* for the AI;
+- is never answered as a question;
+- settles the open question ("A classmate answered: …").
+
+One mid-lesson name call no longer switches on register mode for 90 s; that mode was greying out the classmate's short reply.
+
+**Short memory.** "What kind of bodily part are we focusing on?" got "her hands": "Kulfi's pregnancy" had been said 9 minutes earlier, outside the 90 s window. Every answer now also gets the most relevant earlier lines of *this* lesson (keyword match with crude stemming, "Kulfi's" = "Kulfi"). Teacher questions use 150 s of recent speech, typed questions 180 s. The prompt now:
+- says CONF low is only for genuinely unclear questions;
+- forbids inventing plot details ("cooking the bird with cloves").
+
+**No memory between messages.**
+- A reply to GLASS's "do you mean…?" in the Ask box now redoes that same question with the extra information. Before, it started an unrelated new question.
+- Typed follow-ups see the previous exchange.
+- Option buttons are tied to their own card. Before, they could attach to whichever teacher question was active.
+
+**"Answered twice."**
+- A redone answer (context, Fix, feedback) now hides the card it replaces; both used to stay in the Live list.
+- The "things you could say" prompt has a worked example instead of `<placeholders>`, which the model echoed. It now insists on three different, idea-first options, never "I think the teacher is talking about…".
+
+**Speech recognition.** Character names from the student's own copy of the book are passed to Whisper as spelling hints ("Sampath", not "San Path"; "Kulfi", not "coffee").
+
+Tests: 165 unit tests (statements vs questions from the transcript, classmate turns, a rhetorical question, the register, lesson memory, follow-ups, book names) + 5 macOS port tests.
+
 ## Known limitations (honest)
 
 - **Real classroom audio not tested.** All speech tests used Windows SAPI voices. Real teachers (accents, crosstalk, poor microphones, Meet compression) will reduce accuracy. Add name spellings in Settings → Student if GLASS mishears "Sanad".

@@ -164,3 +164,20 @@ def quote_in(quote: str, corpus_norm: str) -> bool:
 
 QUOTE_REQUEST = re.compile(r"\b(quotes?|quotations?|textual evidence|evidence from the (text|book|novel|poem|play)|"
                            r"which (line|words?|phrase)|find (a|the) (line|phrase|word)|lines? (that|which|where))\b", re.I)
+
+
+_COMMON_CAPS = set("""The A An And But So Then When While If It He She They We I You His Her Their Our This That These Those
+There Here What Who Why How Where Which Chapter Part Mr Mrs Miss Ms Dr Sir Lady Lord God Oh Yes No Not One Two All
+In On At Of For With From By As To Into After Before Now Just Even Still Only Every Each Some Any Such""".split())
+
+
+def proper_names(text: str, limit: int = 8) -> list[str]:
+    """The most frequent names in a book: capitalised words that are not sentence starts or
+    common words ("Sampath", "Kulfi", "Chawla"). Used as speech-recognition hints."""
+    counts: dict[str, int] = {}
+    for m in re.finditer(r"(?<=[a-z,;] )([A-Z][a-z]{2,})\b", text):
+        w = m.group(1)
+        if w not in _COMMON_CAPS:
+            counts[w] = counts.get(w, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    return [w for w, n in ranked if n >= 3][:limit]

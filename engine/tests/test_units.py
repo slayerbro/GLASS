@@ -876,3 +876,163 @@ def test_something_smart_to_say_uses_what_is_being_discussed(monkeypatch):
     # the last few minutes of speech (not just 90 s), the slide and the topic all reach the model
     assert "kinetic energy" in user and "activation energy" in user and "Collision theory" in user and "rates of reaction" in user
     assert not any(c[0] == "run" for c in calls)  # not treated as a literal question to answer
+
+
+# ---------------------------------------------------------------- feedback round 7: a real English Literature lesson
+@pytest.mark.parametrize("text", [
+    "What we see Kulfi doing is this primal drive for her satiation of pleasure.",  # statement, no "?"
+    "is a primal drive that we see from San Path, but arguably he kind of gets it from the influence of his mother.",
+    "Have a nice silly thing Let me just go back to back to in grotesque reality",
+])
+def test_real_lesson_statements_are_not_questions(text):
+    assert not classify_question(text).is_question
+
+
+@pytest.mark.parametrize("text", [
+    "So he was the one that came up with those ideas that essentially, how can I say it diplomatically?",  # thinking aloud
+    "Oh, Mohamed are you here to just check?",  # register
+    "Can you see my screen?",
+])
+def test_real_lesson_talk_is_not_answered(text):
+    assert classify_question(text).check
+
+
+def test_real_lesson_questions_are_answered():
+    for text in ["Spiritual, Noble or Abstract ideals are deliberately lowered or degraded to the physical level. Where do we see that in Kulfi?",
+                 "So for Kulfi, what kind of bodily part are we focusing on, especially in this opening?",
+                 "Do you think we could argue that this is true in the story that we've read so far? Nikke?"]:
+        s = classify_question(text)
+        assert s.is_question and not s.check and not s.rhetorical and not s.generic, (text, s)
+    s = classify_question("The ego, this is your reality. What's realistic? What's socially acceptable? So you could argue "
+                          "that in this book, the ego is social expectations")
+    assert s.rhetorical  # she carried straight on explaining
+    assert classify_question("Any ideas?").generic  # a nudge about the last question, not a question of its own
+
+
+def test_classmates_are_recognised():
+    from glass.detect import likely_classmate
+
+    assert likely_classmate("Miss, when I want to write an essay do I put quotations around it?")
+    assert likely_classmate("I feel like this can be seen in Kulfi's expression of her mental confinement")
+    assert likely_classmate("Sorry miss, I just want to comment on the senile pregnant hag")
+    assert not likely_classmate("So the id, this is your primal drive.")
+
+
+def test_lesson_memory_finds_what_was_said_minutes_ago():
+    import time
+    from glass.memory import LessonMemory, Utterance
+
+    m = LessonMemory()
+    now = time.time()
+    m.add_utterance(Utterance("a", "class", "It's so real, this interpretation of Kulfi's pregnancy, through these principles.", now - 560, now - 555))
+    m.add_utterance(Utterance("b", "class", "Freud believed there were three specific drives that we have.", now - 400, now - 395))
+    m.add_utterance(Utterance("c", "class", "So for Kulfi, what kind of bodily part are we focusing on?", now - 5, now - 1))
+    earlier = m.relevant_earlier("So for Kulfi, what kind of bodily part are we focusing on?")
+    assert "pregnancy" in earlier and "min ago" in earlier and "bodily part" not in earlier  # recent lines aren't repeated
+
+
+def _engine_for_segments(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    sys.modules.setdefault("onnxruntime", types.ModuleType("onnxruntime"))
+    import glass.engine as E
+    from glass.config import Settings
+    from glass.db import DB
+
+    monkeypatch.setattr(E, "Settings", lambda: Settings(tmp_path / "settings.json"))
+    monkeypatch.setattr(E, "DB", lambda path: DB(tmp_path / "glass.db"))
+    eng = E.Engine()
+    monkeypatch.setattr(eng, "_start_audio", lambda capture=True: None)
+    monkeypatch.setattr(eng, "_stop_audio", lambda: None)
+    eng.settings.update({"consent_acknowledged": True, "student_name": "Sanad", "name_aliases": ["Sanad"]})
+
+    async def fake_on_question(sig, hit, text):  # no model: make the card the real path would make
+        ans = eng.answers._new("question", question=sig.text, qid="q_" + sig.text[:5], status="done", say="…")
+        eng.mem.active_question = {"id": ans["qid"], "t": time.time(), "text": sig.text, "answer_id": ans["id"]}
+        return ans
+
+    import time
+    monkeypatch.setattr(eng.answers, "on_question", fake_on_question)
+    return eng
+
+
+def _seg(i, text, t0, t1):
+    from glass.audio.asr import TranscriptSegment
+
+    return TranscriptSegment(f"s{i}", "class", text, t0, t1, True)
+
+
+def test_classmate_answer_settles_the_question_and_is_not_the_teacher(monkeypatch, tmp_path):
+    import time
+
+    eng = _engine_for_segments(monkeypatch, tmp_path)
+
+    async def run():
+        from glass.bus import bus
+        bus.bind(asyncio.get_running_loop())
+        await eng.start_session("english_lit", capture=False)
+        t = time.time()
+        await eng._on_segment(_seg(1, "So for Kulfi, what kind of bodily part are we focusing on, especially in this opening?", t - 6, t - 5))
+        await asyncio.sleep(0.05)
+        await eng._on_segment(_seg(2, "Nikki?", t - 3, t - 2.5))
+        await eng._on_segment(_seg(3, "I would definitely say her belly and the enlargement of her mammary glands", t - 2, t - 0.5))
+        ans = next(iter(eng.answers.answers.values()))
+        assert ans["answered_by"] == "classmate" and "belly" in ans["classmate_answer"] and not ans["rhetorical"]
+        assert eng.mem.utterances[-1].who == "classmate" and "Classmate: I would definitely" in eng.mem.recent(60)
+        assert eng._register_until < time.time()  # one name call is not the register
+        await eng._on_segment(_seg(4, "Miss, when I want to write an essay do I put quotations around it?", t, t + 1))
+        await asyncio.sleep(0.05)
+        assert len(eng.answers.answers) == 1  # a classmate's question to the teacher is not answered
+        await eng.stop_session()
+        eng.math.close()
+        eng.db.close()
+
+    asyncio.run(run())
+
+
+def test_question_the_teacher_talks_straight_past_is_rhetorical(monkeypatch, tmp_path):
+    import time
+
+    eng = _engine_for_segments(monkeypatch, tmp_path)
+
+    async def run():
+        from glass.bus import bus
+        bus.bind(asyncio.get_running_loop())
+        await eng.start_session("english_lit", capture=False)
+        t = time.time()
+        await eng._on_segment(_seg(1, "So when, I don't know guys, do we teach psychology at school?", t - 4, t - 3))
+        await asyncio.sleep(0.05)
+        await eng._on_segment(_seg(2, "I did psychology as part of my degree and it is so fascinating because it helps you understand characters.", t - 2.4, t))
+        ans = next(iter(eng.answers.answers.values()))
+        assert ans["rhetorical"]  # hidden, and its answer job cancelled
+        await eng.stop_session()
+        eng.math.close()
+        eng.db.close()
+
+    asyncio.run(run())
+
+
+def test_reply_to_glass_asking_is_answered_as_the_same_question(monkeypatch):
+    import time
+
+    eng, calls = _answer_engine(monkeypatch)
+    first = eng._new("ask", question="where do we see this in kulfi", status="done", conf="low", say="Do you mean…?",
+                     ask={"q": "Is it about:", "options": ["grotesque realism", "the id"]})
+    asyncio.run(eng.ask("grotesque realism, the material bodily principle"))
+    run = [c for c in calls if c[0] == "run"][-1]
+    assert run[1] == "where do we see this in kulfi" and any("material bodily" in e for e in run[3])
+    # an option tapped on a card goes to THAT card, even while a teacher question is active
+    eng.mem.active_question = {"id": "q_x", "t": time.time(), "text": "What is the id?", "answer_id": "nope"}
+    asyncio.run(eng.clarify("the id", answer_id=first["id"]))
+    run = [c for c in calls if c[0] == "run"][-1]
+    assert run[1] == "where do we see this in kulfi" and "the id" in run[3]
+
+
+def test_book_names_become_speech_hints():
+    from glass.texts import proper_names
+
+    t = ("Sampath sat in the tree. His mother Kulfi cooked. Then Mr Chawla came, and Sampath laughed. The monkeys saw "
+         "Sampath. Pinky ran to Kulfi, but Kulfi said no. Mr Chawla was angry and Chawla shouted. When the bus came, "
+         "the hermit Sampath waved.")
+    assert set(proper_names(t)) == {"Sampath", "Kulfi", "Chawla"}

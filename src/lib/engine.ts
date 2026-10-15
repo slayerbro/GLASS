@@ -81,6 +81,7 @@ function upsertAnswer(a: Answer) {
   // the overlay follows the newest meaningful card
   let focusAnswer = s.focusAnswer;
   if (!exists && !a.rhetorical) focusAnswer = a.id;
+  if (a.replaces && answers[a.replaces]) answers[a.replaces] = { ...answers[a.replaces], status: 'superseded' };
   set({ answers, order, focusAnswer, waitingFor: a.waiting ? a.id : s.waitingFor === a.id && !a.waiting ? null : s.waitingFor });
 }
 
@@ -114,7 +115,7 @@ function onEvent(e: any) {
     case 'speech.activity': if (e.source === 'class') set({ speaking: e.speaking }); break;
     case 'transcript.partial': set({ partial: { id: e.id, source: e.source, text: e.text, t0: e.t0, partial: true } }); break;
     case 'transcript.final': {
-      const tr = [...get().transcript, { id: e.id, source: e.source, text: e.text, t0: e.t0, t1: e.t1, noise: e.noise }].slice(-300);
+      const tr = [...get().transcript, { id: e.id, source: e.source, text: e.text, t0: e.t0, t1: e.t1, noise: e.noise, who: e.who }].slice(-300);
       const p = get().partial;
       set({ transcript: tr, partial: p && p.id === e.id ? null : p });
       break;

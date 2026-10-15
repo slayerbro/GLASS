@@ -281,6 +281,11 @@ class AnswerEngine:
         for expr, val in verified:
             hint = "  (already computed: write CALC: - and use this)" if for_answer else ""
             parts.append(f"VERIFIED RESULT (computed exactly by SymPy): {expr}  =>  {val}{hint}")
+        earlier = self.mem.relevant_earlier(question + " " + " ".join(extra), older_than_s=recent_s,
+                                            max_chars=int(max_chars * 0.25))
+        if earlier:
+            parts.append("EARLIER IN THIS LESSON (lines related to the question):\n" + earlier)
+            ans["sources"].append("lesson memory")
         recent = self.mem.recent(seconds=recent_s, max_chars=int(max_chars * 0.45))
         if recent:
             parts.append("RECENT SPEECH (oldest first, automatic transcription):\n" + recent)
@@ -401,7 +406,7 @@ class AnswerEngine:
             log.info("cancelled %d stale answer job(s) for a newer question", n)
         if prio == DIRECT:
             self.sched.cancel_where(lambda key, p: key.startswith("verify:"))
-        await self._run_answer(ans, sig.text, sig.reference, prio, extra=[])
+        await self._run_answer(ans, sig.text, sig.reference, prio, extra=[], recent_s=150)
         return ans
 
     def _same_question(self, a: str, b: str) -> bool:
@@ -414,12 +419,19 @@ class AnswerEngine:
             return False
         return ca == cb or (len(ca & cb) / len(ca | cb) >= 0.8 and fuzz.token_sort_ratio(a, b) >= 85)
 
-    async def clarify(self, text: str) -> dict:
+    async def clarify(self, text: str, answer_id: str | None = None) -> dict:
         """Instant context: the student typed a few words. They are either context for the
         active question ("natural selection", "question 4"), an instruction about the
         answer ("answer it", "shorter", "give quotes", "that's wrong"), a request for an
         on-screen question ("answer question 2b"), or what the lesson is about."""
         text = text.strip()
+        target = self.answers.get(answer_id or "")
+        if target is not None and target["mode"] in ("question", "ask"):
+            # a reply to one specific card (its "is it about…?" options): never to another question
+            cmds, context = parse_commands(text)
+            active = self.mem.active_question
+            same = active if active and target.get("qid") == active.get("id") else None
+            return await self._redo(target, cmds, context if cmds else text, active=same)
         routed = await self._route_intent(text)
         if routed is not None:
             return routed
@@ -562,6 +574,11 @@ class AnswerEngine:
         ref = extract_reference(text)
         if ref.get("question_number") and len(content_words(text)) <= 4:
             return await self.solve_reference(text, ref)
+        prev = self._last_answer()
+        if prev and prev["mode"] == "ask" and prev.get("kind") != "note" and time.time() - prev["t"] < 240 \
+                and (prev.get("conf") == "low" or prev.get("ask")) and "?" not in text and len(text.split()) <= 12:
+            # GLASS asked what was meant and this is the reply: answer the same question with it
+            return await self._redo(prev, [], text)
         sig_kind = question_kind(text)
         ans = self._new("ask", question=text, kind=sig_kind)
         self._push(ans, force=True)
@@ -575,6 +592,10 @@ class AnswerEngine:
                  f'a correction of your last answer, or their own attempt to check.']
         if last:
             extra.append(f'Your last suggestion was for "{last["resolved"] or last["question"]}": "{last["say"]}"')
+        if prev and prev["mode"] in ("ask", "contribute", "snip", "explain") and time.time() - prev["t"] < 300:
+            said = prev.get("say") or (prev.get("body") or "")[:300]
+            extra.append(f'Earlier the student asked you: "{prev["question"]}" and you replied: "{said}". If this is a '
+                         f'follow-up ("why?", "more", "what about…"), continue from that.')
         await self._run_answer(ans, text, extract_reference(text), DIRECT, extra=extra, recent_s=180)
         return ans
 
@@ -601,7 +622,7 @@ class AnswerEngine:
             ctx += f'\n\nTHE TEACHER JUST ASKED: "{aq["text"]}" (a good answer: "{last["say"]}")'
         system = P.SYSTEM_CONTRIBUTE.format(
             name=self.name, request=text, n=3, verb="ask the teacher" if asking else "say",
-            form="a question to the teacher, 1 sentence" if asking else "what to say, in first person, 1-2 sentences",
+            form="3 questions to the teacher, one sentence each" if asking else "3 things to say, first person, 1-2 sentences each",
             kinds=("questions that show real understanding: why/how something works, what happens in an edge case, "
                    "how it links to an earlier idea or the real world — never something already answered" if asking else
                    "mix (1) building on the teacher's latest point with a link, consequence or example, (2) a precise "
@@ -609,7 +630,8 @@ class AnswerEngine:
             guide=P.guide(self.mem.subject_id))
         await self._stream_markdown(ans, system, ctx + "\n\nWrite the options now.", DIRECT, num_predict=450)
         if ans.get("body"):
-            ans["body"] = re.sub(r"(?<!\n)\n(?=\*\*\d)", "\n\n", ans["body"])
+            body = "\n".join(l for l in ans["body"].splitlines() if not re.match(r"\s*<[^>]*>\s*$", l))  # template echoes
+            ans["body"] = re.sub(r"(?<!\n)\n(?=\*\*\d)", "\n\n", body)
             self._push(ans, force=True)
         return ans
 
