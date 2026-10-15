@@ -5,21 +5,42 @@ const fs = require('fs');
 
 // The installed app is a launcher for the GLASS folder it was built from: it runs that folder's
 // code, so updating the folder (Settings → Updates) updates the app — no reinstalling.
+// If the folder can't be read (macOS blocks apps from Documents/Desktop/Downloads until you allow
+// it: "operation not permitted"), GLASS starts from its own bundled copy and explains in Updates.
 const LINKED = (() => {
   if (!app.isPackaged || global.__glassLinked || process.env.GLASS_NO_LINK) return null;
+  let info;
   try {
-    const info = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'build-info.json'), 'utf8'));
-    const main = path.join(info.sourceDir, 'electron', 'main.cjs');
-    const ok = fs.existsSync(main) && fs.existsSync(path.join(info.sourceDir, 'dist', 'overlay.html'))
-      && fs.existsSync(path.join(info.sourceDir, '.git'));
-    return ok ? main : null;
-  } catch { return null; }
+    info = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'build-info.json'), 'utf8'));
+  } catch { return null; }  // built without a GLASS folder: a normal standalone install
+  const main = path.join(info.sourceDir, 'electron', 'main.cjs');
+  try {
+    // really read, not just stat: macOS privacy protection allows the stat and blocks the read
+    fs.readFileSync(main);
+    fs.readFileSync(path.join(info.sourceDir, 'dist', 'overlay.html'));
+    fs.readdirSync(path.join(info.sourceDir, 'engine', 'glass'));
+    if (!fs.existsSync(path.join(info.sourceDir, '.git'))) return null;
+    return main;
+  } catch (e) {
+    global.__glassLinkError = { code: e.code || 'ERROR', path: info.sourceDir, message: String(e.message || e) };
+    return null;
+  }
 })();
+let linkedLoaded = false;
 if (LINKED) {
   global.__glassLinked = true;
-  require(LINKED);
-  return;  // the folder's main process takes over
+  try {
+    require(LINKED);
+    linkedLoaded = true;
+  } catch (e) {
+    // reading it failed after all (permissions changed between the check and the load): run bundled
+    if (!(e && /^(EPERM|EACCES|ENOENT)$/.test(e.code || '') && !global.__glassLinkStarted)) throw e;
+    global.__glassLinked = false;
+    global.__glassLinkError = { code: e.code, path: path.dirname(path.dirname(LINKED)), message: String(e.message || e) };
+  }
 }
+if (linkedLoaded) return;  // the folder's main process took over
+global.__glassLinkStarted = true;
 
 const net = require('net');
 const crypto = require('crypto');
@@ -412,6 +433,17 @@ function setUpdateState(patch) {
   broadcast('update:state', updateState);
 }
 async function checkForUpdates() {
+  if (global.__glassLinkError) {
+    const e = global.__glassLinkError;
+    const blocked = e.code === 'EPERM' || e.code === 'EACCES';
+    setUpdateState({ checking: false, info: { ok: false, reason: 'link', message: blocked && IS_MAC
+      ? `macOS isn't letting GLASS read your GLASS folder (${e.path}), so it's running its built-in copy and can't update. `
+        + 'Fix: System Settings → Privacy & Security → Files and Folders → GLASS → turn on the folder it asks for '
+        + '(Documents, Desktop or Downloads), then restart GLASS. Or move the GLASS folder to your home folder and run '
+        + '“npm run dist:mac” there once.'
+      : `GLASS couldn't open its folder (${e.path}: ${e.code}), so it's running its built-in copy and can't update.` } });
+    return updateState;
+  }
   if (updateState.checking || updater.running) return updateState;
   setUpdateState({ checking: true });
   let info;
@@ -419,7 +451,8 @@ async function checkForUpdates() {
   setUpdateState({ checking: false, info });
   return updateState;
 }
-ipcMain.handle('update:get', () => ({ ...updateState, version: app.getVersion(), linked: !!global.__glassLinked, root: ROOT }));
+ipcMain.handle('update:get', () => ({ ...updateState, version: app.getVersion(), linked: !!global.__glassLinked, root: ROOT,
+  linkError: global.__glassLinkError || null }));
 ipcMain.handle('update:check', () => checkForUpdates());
 ipcMain.handle('update:run', async (_e, opts = {}) => {
   if (opts.inLesson) return { ok: false, message: 'End the lesson first — GLASS restarts after updating.' };

@@ -54,6 +54,11 @@ export function Dashboard() {
           <div className="mt-auto panel p-3 text-[11.5px] leading-relaxed">
             <div className="flex items-center gap-1.5 text-muted mb-1"><Activity size={12} />System</div>
             <div className={ready.ok ? 'text-exact' : 'text-called'}>{ready.text}</div>
+            {s.update?.info?.reason === 'link' && (
+              <button className="mt-1 text-called hover:underline text-left leading-snug" onClick={() => { useGlass.setState({ settingsSection: 'Updates' }); setView('settings'); }}>
+                Updates need permission — see how
+              </button>
+            )}
             {s.update?.info?.available && (
               <button className="mt-1 text-lumen hover:underline text-left" onClick={() => { useGlass.setState({ settingsSection: 'Updates' }); setView('settings'); }}>
                 Update available ({s.update.info.behind} change{s.update.info.behind === 1 ? '' : 's'})

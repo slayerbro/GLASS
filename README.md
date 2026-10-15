@@ -49,7 +49,13 @@ git pull
 npm install && npm run dist
 ```
 
-Then install `release\GLASS Setup 0.1.0.exe`. From then on, updates come from the button.
+Then install `release\GLASS Setup 0.1.0.exe` (on a Mac: `npm run dist:mac` and the `.dmg` in `release`). From then on, updates come from the button.
+
+**Mac:** macOS stops apps reading **Documents, Desktop and Downloads** until you allow it. If your GLASS folder is in one of those, either:
+- allow GLASS in System Settings → Privacy & Security → Files and Folders; or
+- keep the folder in your home folder (e.g. `~/GLASS`) and run `npm run dist:mac` there once.
+
+Until then GLASS still starts normally, from its built-in copy, and Settings → Updates explains what's blocked.
 
 ## macOS (13 Ventura or newer, Intel or Apple Silicon)
 
