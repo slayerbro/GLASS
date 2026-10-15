@@ -3,7 +3,7 @@ import { RefreshCw } from 'lucide-react';
 import { cmd, IS_MAC, prettyAccel, useGlass } from '../../lib/engine';
 import type { Settings } from '../../lib/types';
 
-const SECTIONS = ['Privacy', 'Student', 'Audio', 'Screen', 'AI models', 'Overlay', 'Shortcuts', 'Diagnostics'] as const;
+const SECTIONS = ['Privacy', 'Student', 'Audio', 'Screen', 'AI models', 'Overlay', 'Shortcuts', 'Updates', 'Diagnostics'] as const;
 
 const SHORTCUT_LABELS: Record<string, string> = {
   toggleOverlay: 'Show / hide overlay', focusContext: 'Type context', expandAnswer: 'Expand answer',
@@ -22,7 +22,11 @@ const PROFILE_TEXT: Record<string, { title: string; text: string }> = {
 export function SettingsView() {
   const s = useGlass();
   const st = s.settings;
-  const [section, setSection] = useState<(typeof SECTIONS)[number]>(st?.consent_acknowledged ? 'Audio' : 'Privacy');
+  const [section, setSection] = useState<(typeof SECTIONS)[number]>(
+    (s.settingsSection as (typeof SECTIONS)[number]) || (st?.consent_acknowledged ? 'Audio' : 'Privacy'));
+  useEffect(() => {
+    if (s.settingsSection) { setSection(s.settingsSection as (typeof SECTIONS)[number]); useGlass.setState({ settingsSection: null }); }
+  }, [s.settingsSection]);
   if (!st) return <div className="p-6 text-faint">{s.connected ? 'Loading settings…' : 'Settings are available once the engine is running.'}</div>;
   const patch = (p: Partial<Settings> & Record<string, unknown>) => cmd('settings.set', { patch: p });
 
@@ -31,7 +35,8 @@ export function SettingsView() {
       <nav className="p-3 border-r border-white/[0.06] space-y-0.5">
         {SECTIONS.map((x) => (
           <button key={x} className={`nav-item w-full ${section === x ? 'active' : ''}`} onClick={() => setSection(x)}>{x}
-            {x === 'Privacy' && !st.consent_acknowledged && <span className="ml-auto dot dot-warn" />}</button>
+            {x === 'Privacy' && !st.consent_acknowledged && <span className="ml-auto dot dot-warn" />}
+            {x === 'Updates' && s.update?.info?.available && <span className="ml-auto dot dot-live" />}</button>
         ))}
       </nav>
       <div className="min-h-0 scroll p-6 max-w-[760px]">
@@ -42,6 +47,7 @@ export function SettingsView() {
         {section === 'AI models' && <Models st={st} patch={patch} />}
         {section === 'Overlay' && <OverlayPrefs />}
         {section === 'Shortcuts' && <Shortcuts />}
+        {section === 'Updates' && <Updates />}
         {section === 'Diagnostics' && <Diagnostics />}
       </div>
     </div>
@@ -64,6 +70,69 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 
 function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
   return <button role="switch" aria-checked={on} aria-label={label} className="toggle" onClick={() => onChange(!on)} />;
+}
+
+function Updates() {
+  const s = useGlass();
+  const u = s.update;
+  const info = u?.info;
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const inLesson = !!s.session;
+  async function check() { setResult(null); await window.glass.invoke('update:check').catch(() => {}); }
+  async function update() {
+    setRunning(true); setResult(null); useGlass.setState({ updateLog: [] });
+    try { setResult(await window.glass.invoke('update:run', { inLesson })); }
+    catch (e) { setResult({ ok: false, message: (e as Error).message }); }
+    setRunning(false);
+  }
+  return (
+    <div>
+      <div className="h-title">Updates</div>
+      <p className="text-[12.5px] text-muted mt-2 leading-relaxed">
+        GLASS updates itself from GitHub: it downloads only what changed, reinstalls packages only when they changed, rebuilds and restarts.
+        Your notes, books and settings are kept.
+      </p>
+      <Row label="This version" hint={u?.root ? `Running from ${u.root}${u.linked ? ' (installed app linked to this folder)' : ''}` : undefined}>
+        <span className="mono text-[12px] text-muted">{info?.current || '—'}{info?.branch ? ` · ${info.branch}` : ''}</span>
+      </Row>
+      <Row label="Latest version" hint={info?.checkedAt ? `Checked ${new Date(info.checkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Checks automatically every few hours.'}>
+        <span className={`text-[12px] ${info?.available ? 'text-lumen' : info?.ok === false ? 'text-called' : 'text-exact'}`}>
+          {u?.checking ? 'Checking…' : !info ? 'Not checked yet' : info.ok === false ? 'Can’t check' : info.available ? `${info.behind} new change${info.behind === 1 ? '' : 's'}` : 'Up to date'}
+        </span>
+        <button className="btn" disabled={u?.checking || running} onClick={check}>Check now</button>
+      </Row>
+      {info?.ok === false && <div className="text-[12px] text-called mt-2 leading-snug">{info.message}</div>}
+      {info?.available && (
+        <div className="mt-3">
+          <div className="eyebrow mb-1">What’s new</div>
+          <ul className="space-y-1">
+            {info.changes?.slice(0, 12).map((c) => (
+              <li key={c.hash} className="text-[12.5px] leading-snug"><span className="mono text-[10.5px] text-faint mr-2">{c.when}</span>{c.subject}</li>
+            ))}
+          </ul>
+          <div className="flex items-center gap-2 mt-3">
+            <button className="btn btn-primary" disabled={running || inLesson} onClick={update}>{running ? 'Updating…' : 'Update now'}</button>
+            {inLesson && <span className="text-[11.5px] text-faint">End the lesson first — GLASS restarts after updating.</span>}
+            {!!info.dirty?.length && !inLesson && <span className="text-[11.5px] text-faint">Files changed on this PC are backed up first (git stash).</span>}
+          </div>
+        </div>
+      )}
+      {(running || s.updateLog.length > 0) && (
+        <div className="mt-3 panel p-3 space-y-1.5">
+          {s.updateLog.map((st, i) => (
+            <div key={i}>
+              <div className="text-[12px] flex items-center gap-1.5">
+                <span className={`dot ${i === s.updateLog.length - 1 && running ? 'dot-live' : ''}`} />{st.step}
+              </div>
+              {st.lines.length > 0 && <pre className="mono text-[10.5px] text-faint whitespace-pre-wrap max-h-24 scroll mt-0.5">{st.lines.slice(-6).join('\n')}</pre>}
+            </div>
+          ))}
+        </div>
+      )}
+      {result && <div className={`mt-2 text-[12.5px] ${result.ok ? 'text-exact' : 'text-unsure'}`}>{result.message}</div>}
+    </div>
+  );
 }
 
 function Privacy({ st, patch }: P) {

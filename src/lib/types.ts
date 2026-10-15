@@ -86,6 +86,27 @@ export interface Answer {
   replaces?: string;
 }
 
+export interface UpdateInfo {
+  ok: boolean;
+  available?: boolean;
+  behind?: number;
+  branch?: string;
+  current?: string;
+  changes?: { hash: string; subject: string; when: string }[];
+  dirty?: string[];
+  reason?: string;
+  message?: string;
+  checkedAt?: number;
+}
+
+export interface UpdateState {
+  checking: boolean;
+  info: UpdateInfo | null;
+  version?: string;
+  linked?: boolean;
+  root?: string;
+}
+
 export interface SnipQuestion {
   label: string;
   text: string;

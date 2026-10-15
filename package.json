@@ -2,7 +2,7 @@
   "name": "glass",
   "productName": "GLASS",
   "version": "0.1.0",
-  "description": "GLASS \u2014 real-time AI classroom copilot (local, private)",
+  "description": "GLASS — real-time AI classroom copilot (local, private)",
   "main": "electron/main.cjs",
   "private": true,
   "scripts": {
@@ -10,8 +10,9 @@
     "build": "vite build",
     "start": "electron .",
     "typecheck": "tsc --noEmit",
-    "dist": "vite build && electron-builder --win",
-    "dist:mac": "vite build && electron-builder --mac"
+    "dist": "node build/write-build-info.cjs && vite build && electron-builder --win",
+    "dist:mac": "node build/write-build-info.cjs && vite build && electron-builder --mac",
+    "test:electron": "node --test electron/updater.test.cjs"
   },
   "dependencies": {
     "katex": "^0.19.0",
@@ -50,7 +51,8 @@
       "electron/**",
       "build/tray*.png",
       "build/icon.png",
-      "package.json"
+      "package.json",
+      "build-info.json"
     ],
     "extraResources": [
       {

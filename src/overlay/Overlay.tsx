@@ -191,6 +191,10 @@ export function Overlay() {
                 {s.session.paused ? <Play size={13} /> : <Pause size={13} />}
               </button>
             )}
+            {s.update?.info?.available && !s.session && (
+              <button className="chip chip-lumen h-[18px] text-[10.5px] mr-1" title="A new version of GLASS is ready — open Updates"
+                onClick={() => window.glass.send('dashboard:open', 'updates')}>Update</button>
+            )}
             <button className="btn btn-ghost btn-icon" title="Open dashboard" onClick={() => window.glass.send('dashboard:open', 'live')}><LayoutDashboard size={13} /></button>
             {s.session && <button className="btn btn-ghost btn-icon" title="Shrink to pill" onClick={() => setView('pill')}><Minus size={13} /></button>}
           </div>

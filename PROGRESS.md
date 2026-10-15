@@ -241,6 +241,21 @@ One mid-lesson name call no longer switches on register mode for 90 s; that mode
 
 Tests: 165 unit tests (statements vs questions from the transcript, classmate turns, a rhetorical question, the register, lesson memory, follow-ups, book names) + 5 macOS port tests.
 
+## 2026-10-15 — updates without reinstalling
+
+- **Settings → Updates** shows the current commit and branch, what's new (commit subjects), and **Update now**. There's also an **Update** chip on the overlay and a sidebar link. It checks 30 s after start, then every 6 h; a check is only a `git fetch`.
+- `electron/updater.cjs`:
+  - stops if the folder has commits that aren't on GitHub;
+  - `git merge --ff-only` from the upstream;
+  - `npm install` only if package.json/lock changed;
+  - `pip install -r` only if the engine requirements changed (engine stopped first; Windows locks loaded modules);
+  - `npm run build`, then the app relaunches.
+
+  Files changed on the PC are stashed first, not lost. An Electron version change is reported, because only that needs a reinstall. It refuses to run during a lesson.
+- **The installed app is now a launcher for its GLASS folder.** `npm run dist` writes `build-info.json` with the folder's path. The packaged `main.cjs` hands over to the folder's `electron/main.cjs`, which runs the folder's UI and engine. So updating the folder updates the installed app. If the folder is gone, it falls back to its own bundled copy.
+
+Tests: `npm run test:electron` runs 6 updater tests against real git repositories (fake GitHub remote + student folder): check, a code-only update, package-list changes (npm/pip, engine stopped first), an Electron change, local edits backed up, and not-a-repo. A smoke test loaded `main.cjs` with a stand-in for Electron: the update handlers register, and an installed copy hands over to the folder. Not run here: real Electron on Windows (no display) and a real GitHub sign-in.
+
 ## Known limitations (honest)
 
 - **Real classroom audio not tested.** All speech tests used Windows SAPI voices. Real teachers (accents, crosstalk, poor microphones, Meet compression) will reduce accuracy. Add name spellings in Settings → Student if GLASS mishears "Sanad".

@@ -18,12 +18,18 @@ const NAV: { id: ViewId; label: string; icon: React.ReactNode }[] = [
 
 export function Dashboard() {
   const s = useGlass();
-  const [view, setView] = useState<ViewId>(((location.hash.slice(1) as ViewId) || 'live'));
+  const [view, setView] = useState<ViewId>(() => {
+    const h = location.hash.slice(1);
+    if (h === 'updates') { useGlass.setState({ settingsSection: 'Updates' }); return 'settings'; }
+    return (h as ViewId) || 'live';
+  });
   const ready = readiness(s);
 
   useEffect(() => {
     connectEngine();
-    return window.glass.on('dashboard:view', (v: ViewId) => setView(v));
+    return window.glass.on('dashboard:view', (v: ViewId | 'updates') => {
+      if (v === 'updates') { useGlass.setState({ settingsSection: 'Updates' }); setView('settings'); } else setView(v);
+    });
   }, []);
 
   return (
@@ -48,6 +54,11 @@ export function Dashboard() {
           <div className="mt-auto panel p-3 text-[11.5px] leading-relaxed">
             <div className="flex items-center gap-1.5 text-muted mb-1"><Activity size={12} />System</div>
             <div className={ready.ok ? 'text-exact' : 'text-called'}>{ready.text}</div>
+            {s.update?.info?.available && (
+              <button className="mt-1 text-lumen hover:underline text-left" onClick={() => { useGlass.setState({ settingsSection: 'Updates' }); setView('settings'); }}>
+                Update available ({s.update.info.behind} change{s.update.info.behind === 1 ? '' : 's'})
+              </button>
+            )}
             {s.status?.thermal && s.status.thermal.level !== 'ok' && (
               <div className={`mt-1 leading-snug ${s.status.thermal.level === 'warm' ? 'text-muted' : 'text-unsure'}`}>{s.status.thermal.message}</div>
             )}

@@ -29,6 +29,28 @@ The Python engine lives in `engine/.venv` (already created on this PC). On a new
 
 On this PC the installed app already works: `%LOCALAPPDATA%\GLASS\venv` is a link to `engine\.venv`. If you move or delete this folder, re-run setup.
 
+## Updating
+
+**Settings → Updates → Update now.** GLASS checks GitHub every few hours, and the overlay shows an **Update** chip when there's a new version. Updating:
+- downloads only what changed;
+- reinstalls app or engine packages only if their lists changed;
+- rebuilds the screens and restarts.
+
+Your notes, books and settings are kept. It won't update during a lesson. If you edited files on this PC, they're backed up first (`git stash`).
+
+The installed app runs the code from the GLASS folder it was built from, so updating that folder updates the app; there's no need to reinstall. One exception: an update that changes Electron itself. GLASS says so, and you run `npm run dist` once and install it.
+
+**One time only**, to move to this system from an older version, in your GLASS folder:
+
+```bash
+git pull
+```
+```bash
+npm install && npm run dist
+```
+
+Then install `release\GLASS Setup 0.1.0.exe`. From then on, updates come from the button.
+
 ## macOS (13 Ventura or newer, Intel or Apple Silicon)
 
 ```bash

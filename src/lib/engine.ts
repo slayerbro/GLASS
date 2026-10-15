@@ -1,6 +1,6 @@
 // WebSocket client for the local engine + the shared Zustand store.
 import { create } from 'zustand';
-import type { Answer, GlassAsk, EngineStatus, Lesson, Metrics, Mode, Notes, ScreenObs, ScreenQuestions, Session, Settings, Task, Utter } from './types';
+import type { Answer, GlassAsk, EngineStatus, Lesson, Metrics, Mode, Notes, ScreenObs, ScreenQuestions, Session, Settings, Task, UpdateState, Utter } from './types';
 
 interface EngineProc { state: string; message?: string; port?: number; token?: string }
 
@@ -31,6 +31,9 @@ export interface GlassState {
   registerCall: { t: number; text: string } | null;
   screenQuestions: ScreenQuestions | null; // questions GLASS noticed on the shared screen
   finalisedAt: number; // bumps when an ended lesson's final notes are saved
+  update: UpdateState | null; // a newer GLASS on GitHub?
+  updateLog: { step: string; lines: string[] }[]; // progress of a running update
+  settingsSection: string | null; // open Settings at this section (e.g. "Updates")
 }
 
 const initial: GlassState = {
@@ -38,6 +41,7 @@ const initial: GlassState = {
   lesson: { subject_id: null, topic: '', subtopic: '', summary: '' }, task: null, taskHistory: [], answers: {}, order: [],
   transcript: [], partial: null, speaking: false, screen: null, notes: null, notesMd: '', settings: null, metrics: {},
   attention: null, waitingFor: null, focusAnswer: null, asks: [], registerCall: null, screenQuestions: null, finalisedAt: 0,
+  update: null, updateLog: [], settingsSection: null,
 };
 
 // what a lesson shows; cleared when a lesson ends and when the next one starts
@@ -155,7 +159,22 @@ function open(proc: EngineProc) {
   };
 }
 
+let updateWired = false;
+function wireUpdates() {
+  if (updateWired) return;
+  updateWired = true;
+  window.glass.invoke<UpdateState>('update:get').then((u) => set({ update: u })).catch(() => {});
+  window.glass.on('update:state', (u: UpdateState) => set({ update: { ...(get().update || {}), ...u } }));
+  window.glass.on('update:progress', (p: { step: string; line: string | null }) => {
+    const log = [...get().updateLog];
+    if (!p.line || !log.length || log[log.length - 1].step !== p.step) log.push({ step: p.step, lines: [] });
+    if (p.line) log[log.length - 1] = { ...log[log.length - 1], lines: [...log[log.length - 1].lines, p.line].slice(-40) };
+    set({ updateLog: log });
+  });
+}
+
 export async function connectEngine() {
+  wireUpdates();
   const proc = await window.glass.invoke<EngineProc>('engine:config');
   set({ proc });
   if (proc.state === 'ready') open(proc);

@@ -2,13 +2,33 @@
 const { app, BrowserWindow, ipcMain, globalShortcut, screen, Tray, Menu, nativeImage, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+
+// The installed app is a launcher for the GLASS folder it was built from: it runs that folder's
+// code, so updating the folder (Settings → Updates) updates the app — no reinstalling.
+const LINKED = (() => {
+  if (!app.isPackaged || global.__glassLinked || process.env.GLASS_NO_LINK) return null;
+  try {
+    const info = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'build-info.json'), 'utf8'));
+    const main = path.join(info.sourceDir, 'electron', 'main.cjs');
+    const ok = fs.existsSync(main) && fs.existsSync(path.join(info.sourceDir, 'dist', 'overlay.html'))
+      && fs.existsSync(path.join(info.sourceDir, '.git'));
+    return ok ? main : null;
+  } catch { return null; }
+})();
+if (LINKED) {
+  global.__glassLinked = true;
+  require(LINKED);
+  return;  // the folder's main process takes over
+}
+
 const net = require('net');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 const DEV = !!process.env.GLASS_DEV;
 const ROOT = path.join(__dirname, '..');
-const ENGINE_DIR = app.isPackaged ? path.join(process.resourcesPath, 'engine') : path.join(ROOT, 'engine');
+// a linked install runs the engine from the GLASS folder too, so engine updates apply as well
+const ENGINE_DIR = app.isPackaged && !global.__glassLinked ? path.join(process.resourcesPath, 'engine') : path.join(ROOT, 'engine');
 const IS_MAC = process.platform === 'darwin';
 // per-user data: %LOCALAPPDATA%\GLASS on Windows, ~/Library/Application Support/GLASS on macOS
 const LOCAL = IS_MAC ? app.getPath('appData') : (process.env.LOCALAPPDATA || app.getPath('userData'));
@@ -53,6 +73,7 @@ let port = 47821;
 let engine = null;
 let engineState = { state: 'starting', message: '' };
 let quitting = false;
+let holdEngine = false;  // an update is replacing the engine's packages: don't auto-restart it
 let backoff = 1000;
 let engineLog = [];
 
@@ -102,7 +123,7 @@ async function startEngine() {
   engine.stderr.on('data', onOut);
   engine.on('exit', (code) => {
     engine = null;
-    if (quitting) return;
+    if (quitting || holdEngine) return;
     setEngineState('restarting', `Engine stopped (code ${code}). Restarting…`);
     setTimeout(startEngine, backoff);
     backoff = Math.min(backoff * 2, 15000);
@@ -382,6 +403,44 @@ ipcMain.handle('export:pdf', async (_e, { name, html }) => {
 
 ipcMain.on('app:quit', () => app.quit());
 
+// ------------------------------------------------------------------ updates (from the GLASS git folder)
+const { Updater } = require('./updater.cjs');
+const updater = new Updater(ROOT, { python: () => PY_CANDIDATES.find((p) => fs.existsSync(p)) });
+let updateState = { checking: false, info: null };
+function setUpdateState(patch) {
+  updateState = { ...updateState, ...patch };
+  broadcast('update:state', updateState);
+}
+async function checkForUpdates() {
+  if (updateState.checking || updater.running) return updateState;
+  setUpdateState({ checking: true });
+  let info;
+  try { info = await updater.check(); } catch (e) { info = { ok: false, message: String(e.message || e) }; }
+  setUpdateState({ checking: false, info });
+  return updateState;
+}
+ipcMain.handle('update:get', () => ({ ...updateState, version: app.getVersion(), linked: !!global.__glassLinked, root: ROOT }));
+ipcMain.handle('update:check', () => checkForUpdates());
+ipcMain.handle('update:run', async (_e, opts = {}) => {
+  if (opts.inLesson) return { ok: false, message: 'End the lesson first — GLASS restarts after updating.' };
+  const res = await updater.update(
+    (step, line) => broadcast('update:progress', { step, line }),
+    { beforePip: () => { holdEngine = true; return stopEngine(); } },
+  );
+  setUpdateState({ info: res.ok ? { ...(updateState.info || {}), available: false, behind: 0, changes: [] } : updateState.info });
+  if (res.ok && res.restart) {
+    setTimeout(async () => {
+      await stopEngine();
+      app.relaunch();
+      app.exit(0);
+    }, 1500);
+  } else if (holdEngine) {
+    holdEngine = false;
+    if (!engine && !quitting) startEngine();  // the update stopped part-way: bring the engine back
+  }
+  return res;
+});
+
 // ------------------------------------------------------------------ tray
 function createTray() {
   // macOS menu bar wants a monochrome "template" image that adapts to light/dark
@@ -412,6 +471,9 @@ app.whenReady().then(async () => {
   createTray();
   registerShortcuts();
   if (process.argv.includes('--dashboard') || viewArg(process.argv)) openDashboard(viewArg(process.argv));
+  // look for updates shortly after start, then every 6 hours (only a git fetch: nothing changes until you press Update)
+  setTimeout(checkForUpdates, 30000);
+  setInterval(checkForUpdates, 6 * 3600 * 1000);
 });
 app.on('window-all-closed', (e) => e.preventDefault?.());
 app.on('before-quit', (ev) => {
